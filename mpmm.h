@@ -74,7 +74,6 @@ namespace mpmm
 
 
 
-#define MPMM_IMPLEMENTATION
 #ifdef MPMM_IMPLEMENTATION
 #pragma once
 #include <new>
