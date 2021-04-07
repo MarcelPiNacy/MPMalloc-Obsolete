@@ -11,7 +11,6 @@
 	limitations under the License.
 */
 
-#pragma once
 #include <cstdint>
 
 
@@ -75,7 +74,6 @@ namespace mpmm
 
 
 #ifdef MPMM_IMPLEMENTATION
-#pragma once
 #include <new>
 #include <atomic>
 #include <cstdint>
@@ -141,128 +139,6 @@ namespace mpmm
 namespace mpmm
 {
 	static std::atomic_bool mpmm_initialized;
-
-
-
-	namespace chunk_cache
-	{
-		extern void init();
-		extern void finalize();
-	}
-
-	namespace shared_cache
-	{
-		extern void init();
-		extern void finalize();
-	}
-
-	namespace thread_cache
-	{
-		extern void init();
-		extern void finalize();
-	}
-
-	void init()
-	{
-		backend::init();
-		shared_cache::init();
-		chunk_cache::init();
-		mpmm_initialized.store(true, std::memory_order_release);
-	}
-
-	bool is_initialized()
-	{
-		return mpmm_initialized.load(std::memory_order_acquire);
-	}
-
-	void finalize()
-	{
-		mpmm_initialized.store(false, std::memory_order_release);
-		chunk_cache::finalize();
-		shared_cache::finalize();
-	}
-
-	void init_thread()
-	{
-		thread_cache::init();
-	}
-
-	bool is_initialized_thread()
-	{
-		return true;
-	}
-
-	void finalize_thread()
-	{
-		thread_cache::finalize();
-	}
-
-	MPMM_INLINE_ALWAYS
-		static void* allocate_impl(size_t size)
-	{
-		if (size <= params::page_size)
-			return thread_cache::allocate(size);
-		if (size < params::chunk_size)
-			return shared_cache::allocate(size);
-		return chunk_cache::allocate(size);
-	}
-
-	void* allocate(size_t size)
-	{
-		void* r = allocate_impl(size);
-#if defined(MPMM_DEBUG) && !defined(MPMM_NO_JUNK)
-		(void)memset(r, MPMM_JUNK_VALUE, size);
-#endif
-		return r;
-	}
-
-	bool try_expand(void* ptr, size_t old_size, size_t new_size)
-	{
-		return block_size_of(old_size) >= new_size;
-	}
-
-	void* reallocate(void* ptr, size_t old_size, size_t new_size)
-	{
-		if (try_expand(ptr, old_size, new_size))
-			return ptr;
-		void* const r = allocate(new_size);
-		if (r != nullptr)
-		{
-			(void)memcpy(r, ptr, old_size);
-			deallocate(ptr, old_size);
-		}
-		return r;
-	}
-
-	void deallocate(void* ptr, size_t size)
-	{
-		if (size <= params::page_size)
-			return thread_cache::deallocate(ptr, size);
-		if (size < params::chunk_size)
-			return shared_cache::deallocate(ptr, size);
-		return chunk_cache::deallocate(ptr, size);
-	}
-
-	size_t block_size_of(size_t size)
-	{
-		if (size <= params::page_size)
-			return thread_cache::block_size_of(size);
-		if (size < params::chunk_size)
-			return shared_cache::block_size_of(size);
-		return chunk_cache::block_size_of(size);
-	}
-
-	size_t trim()
-	{
-		return 0;
-	}
-
-	size_t purge()
-	{
-		return 0;
-	}
-
-
 
 	template <typename T, typename U = T>
 	MPMM_INLINE_ALWAYS void non_atomic_store(std::atomic<T>& where, U&& value)
@@ -1547,6 +1423,105 @@ namespace mpmm
 		{
 			return 0;
 		}
+	}
+
+	void init()
+	{
+		backend::init();
+		shared_cache::init();
+		chunk_cache::init();
+		mpmm_initialized.store(true, std::memory_order_release);
+	}
+
+	bool is_initialized()
+	{
+		return mpmm_initialized.load(std::memory_order_acquire);
+	}
+
+	void finalize()
+	{
+		mpmm_initialized.store(false, std::memory_order_release);
+		chunk_cache::finalize();
+		shared_cache::finalize();
+	}
+
+	void init_thread()
+	{
+		thread_cache::init();
+	}
+
+	bool is_initialized_thread()
+	{
+		return true;
+	}
+
+	void finalize_thread()
+	{
+		thread_cache::finalize();
+	}
+
+	MPMM_INLINE_ALWAYS static void* allocate_impl(size_t size)
+	{
+		if (size <= params::page_size)
+			return thread_cache::allocate(size);
+		if (size < params::chunk_size)
+			return shared_cache::allocate(size);
+		return chunk_cache::allocate(size);
+	}
+
+	void* allocate(size_t size)
+	{
+		void* r = allocate_impl(size);
+#if defined(MPMM_DEBUG) && !defined(MPMM_NO_JUNK)
+		(void)memset(r, MPMM_JUNK_VALUE, size);
+#endif
+		return r;
+	}
+
+	bool try_expand(void* ptr, size_t old_size, size_t new_size)
+	{
+		return block_size_of(old_size) >= new_size;
+	}
+
+	void* reallocate(void* ptr, size_t old_size, size_t new_size)
+	{
+		if (try_expand(ptr, old_size, new_size))
+			return ptr;
+		void* const r = allocate(new_size);
+		if (r != nullptr)
+		{
+			(void)memcpy(r, ptr, old_size);
+			deallocate(ptr, old_size);
+		}
+		return r;
+	}
+
+	void deallocate(void* ptr, size_t size)
+	{
+		if (size <= params::page_size)
+			return thread_cache::deallocate(ptr, size);
+		if (size < params::chunk_size)
+			return shared_cache::deallocate(ptr, size);
+		return chunk_cache::deallocate(ptr, size);
+	}
+
+	size_t block_size_of(size_t size)
+	{
+		if (size <= params::page_size)
+			return thread_cache::block_size_of(size);
+		if (size < params::chunk_size)
+			return shared_cache::block_size_of(size);
+		return chunk_cache::block_size_of(size);
+	}
+
+	size_t trim()
+	{
+		return 0;
+	}
+
+	size_t purge()
+	{
+		return 0;
 	}
 }
 #endif
