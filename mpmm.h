@@ -1042,22 +1042,22 @@ namespace mpmm
 
 		static size_t branch_size_mask;
 		static uint8_t branch_size_log2;
-		static std::atomic<shared_block_allocator_group*> chunk_lookup_roots[65536];
+		static std::atomic<std::atomic<shared_block_allocator_group*>*> chunk_lookup_roots[65536];
 
 		static shared_block_allocator* new_allocator(size_t id)
 		{
 			uint16_t root_index = id & 65535;
 			id >>= 16;
-			uint32_t middle_index = id & branch_size_mask;
+			uint32_t middle_index = (uint32_t)(id & branch_size_mask);
 			id >>= branch_size_log2;
 			uint8_t leaf_index = (uint8_t)id;
 
 			MPMM_INVARIANT((id >> 8) == 0);
 
 			auto& root = chunk_lookup_roots[root_index];
-			shared_block_allocator_group* branch;
+			std::atomic<shared_block_allocator_group*>* branch;
 
-			for (shared_block_allocator_group* tmp = nullptr;; MPMM_SPIN_WAIT)
+			for (std::atomic<shared_block_allocator_group*>* tmp = nullptr;; MPMM_SPIN_WAIT)
 			{
 				branch = root.load(std::memory_order_acquire);
 
@@ -1069,9 +1069,7 @@ namespace mpmm
 				}
 
 				if (tmp == nullptr)
-				{
-					tmp = (shared_block_allocator_group*)backend::allocate_chunk_aligned(branch_size_mask + 1);
-				}
+					tmp = (std::atomic<shared_block_allocator_group*>*)backend::allocate_chunk_aligned(branch_size_mask + 1);
 
 				if (root.compare_exchange_weak(branch, tmp, std::memory_order_acquire, std::memory_order_relaxed))
 				{
@@ -1080,45 +1078,71 @@ namespace mpmm
 				}
 			}
 
-			shared_block_allocator_group& leaf = branch[middle_index];
+			std::atomic<shared_block_allocator_group*>& leaf_ptr = branch[middle_index];
+			shared_block_allocator_group* leaf;
+
+			for (shared_block_allocator_group* tmp = nullptr;; MPMM_SPIN_WAIT)
+			{
+				leaf = leaf_ptr.load(std::memory_order_acquire);
+
+				if (leaf != nullptr)
+				{
+					if (tmp != nullptr)
+						backend::deallocate(tmp, branch_size_mask + 1);
+					break;
+				}
+
+				if (tmp == nullptr)
+					tmp = (shared_block_allocator_group*)backend::allocate_chunk_aligned(sizeof(shared_block_allocator_group));
+
+				if (leaf_ptr.compare_exchange_weak(leaf, tmp, std::memory_order_acquire, std::memory_order_relaxed))
+				{
+					leaf = tmp;
+					break;
+				}
+			}
+
 			uint8_t leaf_mask_index = leaf_index >> 6;
 			uint8_t leaf_bit_index = leaf_index & 63;
-			uint64_t prior = leaf.presence[leaf_mask_index].fetch_or(1UI64 << leaf_bit_index, std::memory_order_acquire);
+			uint64_t prior = leaf->presence[leaf_mask_index].fetch_or(1UI64 << leaf_bit_index, std::memory_order_acquire);
 			MPMM_INVARIANT(!bit_test(prior, leaf_bit_index));
-			return &leaf.allocators[leaf_index];
+			return &leaf->allocators[leaf_index];
 		}
 
 		static shared_block_allocator* find_allocator(size_t id)
 		{
 			uint16_t root_index = id & 65535;
 			id >>= 16;
-			uint32_t middle_index = id & branch_size_mask;
+			uint32_t middle_index = (uint32_t)(id & branch_size_mask);
 			id >>= branch_size_log2;
 			uint8_t leaf_index = (uint8_t)id;
-			shared_block_allocator_group* branch = chunk_lookup_roots[root_index].load(std::memory_order_acquire);
+			std::atomic<shared_block_allocator_group*>* branch = chunk_lookup_roots[root_index].load(std::memory_order_acquire);
 			if (branch == nullptr)
 				return nullptr;
-			shared_block_allocator_group& leaf = branch[middle_index];
+			shared_block_allocator_group* leaf = branch[middle_index].load(std::memory_order_acquire);
+			if (leaf == nullptr)
+				return nullptr;
 			uint8_t leaf_mask_index = leaf_index >> 6;
 			uint8_t leaf_bit_index = leaf_index & 63;
-			if (!bit_test(leaf.presence[leaf_mask_index].load(std::memory_order_acquire), leaf_bit_index))
+			if (!bit_test(leaf->presence[leaf_mask_index].load(std::memory_order_acquire), leaf_bit_index))
 				return nullptr;
-			return &leaf.allocators[leaf_index];
+			return &leaf->allocators[leaf_index];
 		}
 
 		static void delete_allocator(size_t id)
 		{
 			uint16_t root_index = id & 65535;
 			id >>= 16;
-			uint32_t middle_index = id & branch_size_mask;
+			uint32_t middle_index = (uint32_t)(id & branch_size_mask);
 			id >>= branch_size_log2;
 			uint8_t leaf_index = (uint8_t)id;
-			shared_block_allocator_group* branch = chunk_lookup_roots[root_index].load(std::memory_order_acquire);
+			std::atomic<shared_block_allocator_group*>* branch = chunk_lookup_roots[root_index].load(std::memory_order_acquire);
 			MPMM_INVARIANT(branch != nullptr);
-			shared_block_allocator_group& leaf = branch[middle_index];
+			shared_block_allocator_group* leaf = branch[middle_index].load(std::memory_order_acquire);
+			MPMM_INVARIANT(leaf != nullptr);
 			uint8_t leaf_mask_index = leaf_index >> 6;
 			uint8_t leaf_bit_index = leaf_index & 63;
-			uint64_t prior = leaf.presence[leaf_mask_index].fetch_and(~(1UI64 << leaf_bit_index), std::memory_order_release);
+			uint64_t prior = leaf->presence[leaf_mask_index].fetch_and(~(1UI64 << leaf_bit_index), std::memory_order_release);
 			MPMM_INVARIANT(bit_test(prior, leaf_bit_index));
 		}
 #endif
@@ -1142,7 +1166,7 @@ namespace mpmm
 			buffer_size += chunk_count * sizeof(shared_block_allocator);
 #else
 			branch_size_log2 = 64 - params::chunk_size_log2 - 24;
-			branch_size_mask = (sizeof(size_t) << branch_size_log2) - 1;
+			branch_size_mask = (sizeof(std::atomic<std::atomic<shared_block_allocator_group>*>) << branch_size_log2) - 1;
 #endif
 			buffer_size += size_class_count * sizeof(shared_allocator_list);
 			buffer_size += size_class_count * sizeof(shared_block_allocator_recover_list);
@@ -1557,18 +1581,17 @@ namespace mpmm
 		thread_cache::finalize();
 	}
 
-	MPMM_INLINE_ALWAYS static void* allocate_impl(size_t size)
-	{
-		if (size <= params::page_size)
-			return thread_cache::allocate(size);
-		if (size < params::chunk_size)
-			return shared_cache::allocate(size);
-		return chunk_cache::allocate(size);
-	}
-
 	void* allocate(size_t size)
 	{
-		void* r = allocate_impl(size);
+		void* r;
+		
+		if (size <= params::page_size)
+			r = thread_cache::allocate(size);
+		else if (size < params::chunk_size)
+			r = shared_cache::allocate(size);
+		else
+			r = chunk_cache::allocate(size);
+
 #if defined(MPMM_DEBUG) && !defined(MPMM_NO_JUNK)
 		(void)memset(r, MPMM_JUNK_VALUE, size);
 #endif
