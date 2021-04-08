@@ -162,19 +162,19 @@ namespace mpmm
 	}
 
 	template <typename T>
-	MPMM_INLINE_ALWAYS bool bit_test(T mask, uint_fast8_t index)
+	MPMM_INLINE_ALWAYS constexpr bool bit_test(T mask, uint_fast8_t index)
 	{
 		return (mask & ((T)1 << (T)index)) != (T)0;
 	}
 
 	template <typename T>
-	MPMM_INLINE_ALWAYS void bit_set(T& mask, uint_fast8_t index)
+	MPMM_INLINE_ALWAYS constexpr void bit_set(T& mask, uint_fast8_t index)
 	{
 		mask |= ((T)1 << index);
 	}
 
 	template <typename T>
-	MPMM_INLINE_ALWAYS void bit_reset(T& mask, uint_fast8_t index)
+	MPMM_INLINE_ALWAYS constexpr void bit_reset(T& mask, uint_fast8_t index)
 	{
 		mask &= (T)~((T)1 << index);
 	}
@@ -309,6 +309,8 @@ namespace mpmm
 			params::processor_count = info.dwNumberOfProcessors;
 			params::page_size = info.dwPageSize;
 			params::chunk_size = info.dwPageSize * std::hardware_constructive_interference_size * 8;
+			constexpr size_t min_chunk_size = 32 * 4096;
+			MPMM_INVARIANT(params::chunk_size >= min_chunk_size);
 			params::page_size_log2 = floor_log2(params::page_size);
 			params::chunk_size_log2 = floor_log2(params::chunk_size);
 			max_address = info.lpMaximumApplicationAddress;
@@ -326,7 +328,7 @@ namespace mpmm
 			return VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 		}
 
-		MPMM_INLINE_ALWAYS void* allocate_chunks(size_t size)
+		MPMM_INLINE_ALWAYS void* allocate_chunk_aligned(size_t size)
 		{
 			MEM_ADDRESS_REQUIREMENTS req = {};
 			req.Alignment = params::chunk_size;
@@ -428,7 +430,7 @@ namespace mpmm
 		{
 			inline void (*init)() = os::init;
 			inline void* (*allocate)(size_t size) = os::allocate;
-			inline void* (*allocate_chunks)(size_t size) = os::allocate_chunks;
+			inline void* (*allocate_chunk_aligned)(size_t size) = os::allocate_chunk_aligned;
 			inline void (*deallocate)(void* ptr, size_t size) = os::deallocate;
 			inline void (*purge)(void* ptr, size_t size) = os::purge;
 			inline void (*make_readwrite)(void* ptr, size_t size) = os::make_readwrite;
@@ -449,11 +451,11 @@ namespace mpmm
 			return callbacks::allocate(size);
 		}
 
-		MPMM_INLINE_ALWAYS void* allocate_chunks(size_t size)
+		MPMM_INLINE_ALWAYS void* allocate_chunk_aligned(size_t size)
 		{
-			if (callbacks::allocate_chunks == nullptr)
+			if (callbacks::allocate_chunk_aligned == nullptr)
 				return nullptr;
-			return callbacks::allocate_chunks(size);
+			return callbacks::allocate_chunk_aligned(size);
 		}
 
 		MPMM_INLINE_ALWAYS void deallocate(void* ptr, size_t size)
@@ -866,7 +868,7 @@ namespace mpmm
 		{
 			void* r = try_allocate(size);
 			if (r == nullptr)
-				r = backend::allocate_chunks(MPMM_ALIGN_ROUND(size, params::chunk_size));
+				r = backend::allocate_chunk_aligned(MPMM_ALIGN_ROUND(size, params::chunk_size));
 			return r;
 		}
 
@@ -998,7 +1000,7 @@ namespace mpmm
 			}
 		};
 
-		struct shared_allocator_list
+		struct MPMM_SHARED_ATTR shared_allocator_list
 		{
 			std::atomic<shared_block_allocator*> head;
 
@@ -1028,15 +1030,103 @@ namespace mpmm
 
 
 
-		size_t size_class_count;
+		static uint8_t size_class_count;
 #if UINTPTR_MAX == UINT32_MAX
-		shared_block_allocator* chunk_lookup;
+		static shared_block_allocator* chunk_lookup;
 #else
+		struct MPMM_SHARED_ATTR shared_block_allocator_group
+		{
+			std::atomic<uint64_t> presence[8];
+			shared_block_allocator allocators[256];
+		};
+
+		static size_t branch_size_mask;
+		static uint8_t branch_size_log2;
+		static std::atomic<shared_block_allocator_group*> chunk_lookup_roots[65536];
+
+		static shared_block_allocator* new_allocator(size_t id)
+		{
+			uint16_t root_index = id & 65535;
+			id >>= 16;
+			uint32_t middle_index = id & branch_size_mask;
+			id >>= branch_size_log2;
+			uint8_t leaf_index = (uint8_t)id;
+
+			MPMM_INVARIANT((id >> 8) == 0);
+
+			auto& root = chunk_lookup_roots[root_index];
+			shared_block_allocator_group* branch;
+
+			for (shared_block_allocator_group* tmp = nullptr;; MPMM_SPIN_WAIT)
+			{
+				branch = root.load(std::memory_order_acquire);
+
+				if (branch != nullptr)
+				{
+					if (tmp != nullptr)
+						backend::deallocate(tmp, branch_size_mask + 1);
+					break;
+				}
+
+				if (tmp == nullptr)
+				{
+					tmp = (shared_block_allocator_group*)backend::allocate_chunk_aligned(branch_size_mask + 1);
+				}
+
+				if (root.compare_exchange_weak(branch, tmp, std::memory_order_acquire, std::memory_order_relaxed))
+				{
+					branch = tmp;
+					break;
+				}
+			}
+
+			shared_block_allocator_group& leaf = branch[middle_index];
+			uint8_t leaf_mask_index = leaf_index >> 6;
+			uint8_t leaf_bit_index = leaf_index & 63;
+			uint64_t prior = leaf.presence[leaf_mask_index].fetch_or(1UI64 << leaf_bit_index, std::memory_order_acquire);
+			MPMM_INVARIANT(!bit_test(prior, leaf_bit_index));
+			return &leaf.allocators[leaf_index];
+		}
+
+		static shared_block_allocator* find_allocator(size_t id)
+		{
+			uint16_t root_index = id & 65535;
+			id >>= 16;
+			uint32_t middle_index = id & branch_size_mask;
+			id >>= branch_size_log2;
+			uint8_t leaf_index = (uint8_t)id;
+			shared_block_allocator_group* branch = chunk_lookup_roots[root_index].load(std::memory_order_acquire);
+			if (branch == nullptr)
+				return nullptr;
+			shared_block_allocator_group& leaf = branch[middle_index];
+			uint8_t leaf_mask_index = leaf_index >> 6;
+			uint8_t leaf_bit_index = leaf_index & 63;
+			if (!bit_test(leaf.presence[leaf_mask_index].load(std::memory_order_acquire), leaf_bit_index))
+				return nullptr;
+			return &leaf.allocators[leaf_index];
+		}
+
+		static void delete_allocator(size_t id)
+		{
+			uint16_t root_index = id & 65535;
+			id >>= 16;
+			uint32_t middle_index = id & branch_size_mask;
+			id >>= branch_size_log2;
+			uint8_t leaf_index = (uint8_t)id;
+			shared_block_allocator_group* branch = chunk_lookup_roots[root_index].load(std::memory_order_acquire);
+			MPMM_INVARIANT(branch != nullptr);
+			shared_block_allocator_group& leaf = branch[middle_index];
+			uint8_t leaf_mask_index = leaf_index >> 6;
+			uint8_t leaf_bit_index = leaf_index & 63;
+			uint64_t prior = leaf.presence[leaf_mask_index].fetch_and(~(1UI64 << leaf_bit_index), std::memory_order_release);
+			MPMM_INVARIANT(bit_test(prior, leaf_bit_index));
+		}
 #endif
+
 		shared_allocator_list* bins;
 		shared_block_allocator_recover_list* recovered;
 
-		static size_t chunk_id_of(void* data)
+		MPMM_INLINE_ALWAYS static size_t chunk_id_of(void* data)
 		{
 			size_t mask = (size_t)data;
 			mask >>= params::chunk_size_log2;
@@ -1046,19 +1136,24 @@ namespace mpmm
 		void init()
 		{
 			size_class_count = params::chunk_size_log2 - params::page_size_log2;
+			size_t buffer_size = 0;
 #if UINTPTR_MAX == UINT32_MAX
 			size_t chunk_count = 1U << (32 - params::chunk_size_log2);
-			size_t buffer_size = chunk_count * sizeof(shared_block_allocator);
+			buffer_size += chunk_count * sizeof(shared_block_allocator);
+#else
+			branch_size_log2 = 64 - params::chunk_size_log2 - 24;
+			branch_size_mask = (sizeof(size_t) << branch_size_log2) - 1;
+#endif
 			buffer_size += size_class_count * sizeof(shared_allocator_list);
 			buffer_size += size_class_count * sizeof(shared_block_allocator_recover_list);
 			uint8_t* buffer = (uint8_t*)backend::allocate(buffer_size);
+#if UINTPTR_MAX == UINT32_MAX
 			chunk_lookup = (shared_block_allocator*)buffer;
 			buffer += chunk_count * sizeof(shared_block_allocator);
+#endif
 			bins = (shared_allocator_list*)buffer;
 			buffer += size_class_count * sizeof(shared_allocator_list);
 			recovered = (shared_block_allocator_recover_list*)buffer;
-#else
-#endif
 		}
 
 		void finalize()
@@ -1106,10 +1201,11 @@ namespace mpmm
 			{
 				uint8_t* buffer = (uint8_t*)chunk_cache::allocate(params::chunk_size);
 				shared_block_allocator* allocator;
-#if UINTPTR_MAX == UINT32_MAX
 				size_t id = chunk_id_of(buffer);
+#if UINTPTR_MAX == UINT32_MAX
 				allocator = &chunk_lookup[id];
 #else
+				allocator = new_allocator(id);
 #endif
 				allocator->init(size_log2, recovered + sc, buffer);
 				r = allocator->allocate();
@@ -1120,10 +1216,11 @@ namespace mpmm
 
 		void deallocate(void* ptr, size_t size)
 		{
-#if UINTPTR_MAX == UINT32_MAX
 			size_t id = chunk_id_of(ptr);
+#if UINTPTR_MAX == UINT32_MAX
 			chunk_lookup[id].deallocate(ptr);
 #else
+			find_allocator(id)->deallocate(ptr);
 #endif
 		}
 
