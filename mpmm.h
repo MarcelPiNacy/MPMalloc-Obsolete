@@ -230,6 +230,7 @@ namespace mpmm
 	MPMM_INLINE_ALWAYS size_t wellons_hash(size_t value) noexcept
 	{
 		// Chris Wellons hash32 & hash64 https://nullprogram.com/blog/2018/07/31/
+
 #if UINT32_MAX == UINTPTR_MAX
 		value ^= value >> 16;
 		value *= 0x45d9f3bUI32;
@@ -280,8 +281,6 @@ namespace mpmm
 		size = round_pow2(size);
 		return size;
 	}
-
-
 
 #ifdef MPMM_WINDOWS
 	namespace os
@@ -334,28 +333,34 @@ namespace mpmm
 
 		MPMM_INLINE_ALWAYS void deallocate(void* ptr, size_t size) noexcept
 		{
-			(void)VirtualFree(ptr, 0, MEM_RELEASE);
+			MPMM_INVARIANT(ptr != nullptr);
+			bool result = VirtualFree(ptr, 0, MEM_RELEASE);
+			MPMM_INVARIANT(result);
 		}
 
 		MPMM_INLINE_ALWAYS void purge(void* ptr, size_t size) noexcept
 		{
+			MPMM_INVARIANT(ptr != nullptr);
 			(void)DiscardVirtualMemory(ptr, size);
 		}
 
 		MPMM_INLINE_ALWAYS void make_readwrite(void* ptr, size_t size) noexcept
 		{
+			MPMM_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READWRITE, &old);
 		}
 
 		MPMM_INLINE_ALWAYS void make_readonly(void* ptr, size_t size) noexcept
 		{
+			MPMM_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READONLY, &old);
 		}
 
 		MPMM_INLINE_ALWAYS void make_noaccess(void* ptr, size_t size) noexcept
 		{
+			MPMM_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READWRITE, &old);
 		}
@@ -791,8 +796,8 @@ namespace mpmm
 
 		static shared_chunk_list single_chunk_bin;
 
-		static constexpr uint8_t shard_count_log2 = 8;
-		static constexpr size_t shard_mask = 255;
+		static constexpr uint8_t SHARD_COUNT_LOG2 = 8;
+		static constexpr size_t SHARD_MASK = 255;
 		static chunk_cache_shard shards[256];
 
 		void init() noexcept
@@ -812,8 +817,8 @@ namespace mpmm
 				return single_chunk_bin.pop();
 			--size;
 			size_t hash = wellons_hash(size);
-			size_t shard_index = hash & shard_mask;
-			hash >>= shard_count_log2;
+			size_t shard_index = hash & SHARD_MASK;
+			hash >>= SHARD_COUNT_LOG2;
 			return shards[shard_index].allocate(size, hash);
 		}
 
@@ -832,8 +837,8 @@ namespace mpmm
 				return single_chunk_bin.push(ptr);
 			--size;
 			size_t hash = wellons_hash(size);
-			size_t shard_index = hash & shard_mask;
-			hash >>= shard_count_log2;
+			size_t shard_index = hash & SHARD_MASK;
+			hash >>= SHARD_COUNT_LOG2;
 			return shards[shard_index].deallocate(ptr, size, hash);
 		}
 
