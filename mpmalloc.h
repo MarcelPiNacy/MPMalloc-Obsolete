@@ -11,13 +11,13 @@
 	limitations under the License.
 */
 
-#ifndef MPMM_INCLUDED
-#define MPMM_INCLUDED
+#ifndef MPMALLOC_INCLUDED
+#define MPMALLOC_INCLUDED
 #include <cstdint>
 
 
 
-namespace mpmm
+namespace mpmalloc
 {
 	namespace fn_ptr
 	{
@@ -122,163 +122,163 @@ namespace mpmm
 
 
 
-#ifdef MPMM_IMPLEMENTATION
+#ifdef MPMALLOC_IMPLEMENTATION
 #include <new>
 #include <atomic>
 #include <cstdint>
 #include <shared_mutex>
 
 #if UINT32_MAX == UINTPTR_MAX
-#define MPMM_32BIT
+#define MPMALLOC_32BIT
 #else
-#define MPMM_64BIT
+#define MPMALLOC_64BIT
 #endif
 
-#if !defined(MPMM_DEBUG) && (defined(_DEBUG) || !defined(NDEBUG))
-#define MPMM_DEBUG
+#if !defined(MPMALLOC_DEBUG) && (defined(_DEBUG) || !defined(NDEBUG))
+#define MPMALLOC_DEBUG
 #endif
 
-#if !defined(MPMM_JUNK_VALUE) && !defined(MPMM_NO_JUNK)
-#define MPMM_JUNK_VALUE 0xcd
+#if !defined(MPMALLOC_JUNK_VALUE) && !defined(MPMALLOC_NO_JUNK)
+#define MPMALLOC_JUNK_VALUE 0xcd
 #endif
 
-#ifndef MPMM_SHARED_ATTR
-#define MPMM_SHARED_ATTR alignas(std::hardware_destructive_interference_size)
+#ifndef MPMALLOC_SHARED_ATTR
+#define MPMALLOC_SHARED_ATTR alignas(std::hardware_destructive_interference_size)
 #endif
 
-#define MPMM_ALIGN_FLOOR(VALUE, ALIGNMENT) ((VALUE) & ~((ALIGNMENT) - 1))
-#define MPMM_ALIGN_ROUND(VALUE, ALIGNMENT) ((VALUE + ((ALIGNMENT) - 1)) & ~((ALIGNMENT) - 1))
-#define MPMM_ALIGN_FLOOR_LOG2(VALUE, ALIGNMENT_LOG2) MPMM_ALIGN_FLOOR(VALUE, ((size_t)1 << (size_t)ALIGNMENT_LOG2))
-#define MPMM_ALIGN_ROUND_LOG2(VALUE, ALIGNMENT_LOG2) MPMM_ALIGN_ROUND(VALUE, ((size_t)1 << (size_t)ALIGNMENT_LOG2))
+#define MPMALLOC_ALIGN_FLOOR(VALUE, ALIGNMENT) ((VALUE) & ~((ALIGNMENT) - 1))
+#define MPMALLOC_ALIGN_ROUND(VALUE, ALIGNMENT) ((VALUE + ((ALIGNMENT) - 1)) & ~((ALIGNMENT) - 1))
+#define MPMALLOC_ALIGN_FLOOR_LOG2(VALUE, ALIGNMENT_LOG2) MPMALLOC_ALIGN_FLOOR(VALUE, ((size_t)1 << (size_t)ALIGNMENT_LOG2))
+#define MPMALLOC_ALIGN_ROUND_LOG2(VALUE, ALIGNMENT_LOG2) MPMALLOC_ALIGN_ROUND(VALUE, ((size_t)1 << (size_t)ALIGNMENT_LOG2))
 
 #ifdef _WIN32
-#define MPMM_WINDOWS
+#define MPMALLOC_WINDOWS
 #include <Windows.h>
-#define MPMM_SPIN_WAIT YieldProcessor()
+#define MPMALLOC_SPIN_WAIT YieldProcessor()
 #else
-#error "MPMM: UNSUPPORTED OS"
+#error "MPMALLOC: UNSUPPORTED OS"
 #endif
 
 #ifdef _MSVC_LANG
-#define MPMM_LIKELY_IF(CONDITION) if ((CONDITION))
-#define MPMM_UNLIKELY_IF(CONDITION) if ((CONDITION))
-#define MPMM_ROL64(MASK, COUNT)  ((uint8_t)_rotl64((MASK), (COUNT)))
-#define MPMM_POPCOUNT8(MASK)  ((uint8_t)__popcnt16((MASK)))
-#define MPMM_POPCOUNT16(MASK) ((uint8_t)__popcnt16((MASK)))
-#define MPMM_POPCOUNT32(MASK) ((uint8_t)__popcnt((MASK)))
-#ifdef MPMM_32BIT
-#define MPMM_POPCOUNT64(MASK) (MPMM_POPCOUNT32((uint32_t)((MASK))) + MPMM_POPCOUNT32((uint32_t)((MASK) >> 32)))
+#define MPMALLOC_LIKELY_IF(CONDITION) if ((CONDITION))
+#define MPMALLOC_UNLIKELY_IF(CONDITION) if ((CONDITION))
+#define MPMALLOC_ROL64(MASK, COUNT)  ((uint8_t)_rotl64((MASK), (COUNT)))
+#define MPMALLOC_POPCOUNT8(MASK)  ((uint8_t)__popcnt16((MASK)))
+#define MPMALLOC_POPCOUNT16(MASK) ((uint8_t)__popcnt16((MASK)))
+#define MPMALLOC_POPCOUNT32(MASK) ((uint8_t)__popcnt((MASK)))
+#ifdef MPMALLOC_32BIT
+#define MPMALLOC_POPCOUNT64(MASK) (MPMALLOC_POPCOUNT32((uint32_t)((MASK))) + MPMALLOC_POPCOUNT32((uint32_t)((MASK) >> 32)))
 #else
-#define MPMM_POPCOUNT64(MASK) ((uint8_t)__popcnt64((MASK)))
+#define MPMALLOC_POPCOUNT64(MASK) ((uint8_t)__popcnt64((MASK)))
 #endif
-#define MPMM_INLINE_ALWAYS __forceinline
-#define MPMM_INLINE_NEVER __declspec(noinline)
-#define MPMM_ASSUME(EXPRESSION) __assume(EXPRESSION)
-#ifdef MPMM_DEBUG
+#define MPMALLOC_INLINE_ALWAYS __forceinline
+#define MPMALLOC_INLINE_NEVER __declspec(noinline)
+#define MPMALLOC_ASSUME(EXPRESSION) __assume(EXPRESSION)
+#ifdef MPMALLOC_DEBUG
 #include <cassert>
-#define MPMM_INVARIANT(EXPRESSION) assert(EXPRESSION)
-#define MPMM_UNREACHABLE abort()
+#define MPMALLOC_INVARIANT(EXPRESSION) assert(EXPRESSION)
+#define MPMALLOC_UNREACHABLE abort()
 #else
-#define MPMM_INVARIANT(EXPRESSION) MPMM_ASSUME(EXPRESSION)
-#define MPMM_UNREACHABLE MPMM_ASSUME(0)
+#define MPMALLOC_INVARIANT(EXPRESSION) MPMALLOC_ASSUME(EXPRESSION)
+#define MPMALLOC_UNREACHABLE MPMALLOC_ASSUME(0)
 #endif
 #else
-#error "MPMM: UNSUPPORTED COMPILER"
+#error "MPMALLOC: UNSUPPORTED COMPILER"
 #endif
 
 
 
-namespace mpmm
+namespace mpmalloc
 {
 	template <typename T, typename U = T>
-	MPMM_INLINE_ALWAYS void non_atomic_store(std::atomic<T>& where, U&& value) noexcept
+	MPMALLOC_INLINE_ALWAYS void non_atomic_store(std::atomic<T>& where, U&& value) noexcept
 	{
 		static_assert(where.is_always_lock_free);
 		*(T*)&where = value;
 	}
 
 	template <typename T>
-	MPMM_INLINE_ALWAYS T non_atomic_load(const std::atomic<T>& from) noexcept
+	MPMALLOC_INLINE_ALWAYS T non_atomic_load(const std::atomic<T>& from) noexcept
 	{
 		static_assert(from.is_always_lock_free);
 		return *(const T*)&from;
 	}
 
 	template <typename T>
-	MPMM_INLINE_ALWAYS constexpr bool bit_test(T mask, uint_fast8_t index) noexcept
+	MPMALLOC_INLINE_ALWAYS constexpr bool bit_test(T mask, uint_fast8_t index) noexcept
 	{
 		return (mask & ((T)1 << (T)index)) != (T)0;
 	}
 
 	template <typename T>
-	MPMM_INLINE_ALWAYS constexpr void bit_set(T& mask, uint_fast8_t index) noexcept
+	MPMALLOC_INLINE_ALWAYS constexpr void bit_set(T& mask, uint_fast8_t index) noexcept
 	{
 		mask |= ((T)1 << index);
 	}
 
 	template <typename T>
-	MPMM_INLINE_ALWAYS constexpr void bit_reset(T& mask, uint_fast8_t index) noexcept
+	MPMALLOC_INLINE_ALWAYS constexpr void bit_reset(T& mask, uint_fast8_t index) noexcept
 	{
 		mask &= (T)~((T)1 << index);
 	}
 
-	MPMM_INLINE_ALWAYS uint8_t find_first_set(uint32_t mask) noexcept
+	MPMALLOC_INLINE_ALWAYS uint8_t find_first_set(uint32_t mask) noexcept
 	{
-		MPMM_INVARIANT(mask != 0);
+		MPMALLOC_INVARIANT(mask != 0);
 		unsigned long r;
 		(void)BitScanForward(&r, mask);
 		return (uint8_t)r;
 	}
 
-	MPMM_INLINE_ALWAYS uint8_t find_first_set(uint64_t mask) noexcept
+	MPMALLOC_INLINE_ALWAYS uint8_t find_first_set(uint64_t mask) noexcept
 	{
-		MPMM_INVARIANT(mask != 0);
+		MPMALLOC_INVARIANT(mask != 0);
 		unsigned long r;
 		(void)BitScanForward64(&r, mask);
 		return (uint8_t)r;
 	}
 
-	MPMM_INLINE_ALWAYS uint8_t find_last_set(uint32_t mask) noexcept
+	MPMALLOC_INLINE_ALWAYS uint8_t find_last_set(uint32_t mask) noexcept
 	{
-		MPMM_INVARIANT(mask != 0);
+		MPMALLOC_INVARIANT(mask != 0);
 		unsigned long r;
 		(void)BitScanReverse(&r, mask);
 		return (uint8_t)r;
 	}
 
-	MPMM_INLINE_ALWAYS uint8_t find_last_set(uint64_t mask) noexcept
+	MPMALLOC_INLINE_ALWAYS uint8_t find_last_set(uint64_t mask) noexcept
 	{
-		MPMM_INVARIANT(mask != 0);
+		MPMALLOC_INVARIANT(mask != 0);
 		unsigned long r;
 		(void)BitScanReverse64(&r, mask);
 		return (uint8_t)r;
 	}
 
-	MPMM_INLINE_ALWAYS uint8_t floor_log2(uint32_t value) noexcept
+	MPMALLOC_INLINE_ALWAYS uint8_t floor_log2(uint32_t value) noexcept
 	{
 		return find_last_set(value);
 	}
 
-	MPMM_INLINE_ALWAYS uint8_t floor_log2(uint64_t value) noexcept
+	MPMALLOC_INLINE_ALWAYS uint8_t floor_log2(uint64_t value) noexcept
 	{
 		return find_last_set(value);
 	}
 
-	MPMM_INLINE_ALWAYS uint32_t round_pow2(uint32_t value) noexcept
+	MPMALLOC_INLINE_ALWAYS uint32_t round_pow2(uint32_t value) noexcept
 	{
-		if (MPMM_POPCOUNT32(value) == 1)
+		if (MPMALLOC_POPCOUNT32(value) == 1)
 			return value;
 		return 1UI32 << (floor_log2(value) + 1);
 	}
 
-	MPMM_INLINE_ALWAYS uint64_t round_pow2(uint64_t value) noexcept
+	MPMALLOC_INLINE_ALWAYS uint64_t round_pow2(uint64_t value) noexcept
 	{
-		if (MPMM_POPCOUNT64(value) == 1)
+		if (MPMALLOC_POPCOUNT64(value) == 1)
 			return value;
 		return 1UI64 << (floor_log2(value) + 1);
 	}
 
-	MPMM_INLINE_ALWAYS size_t wellons_hash(size_t value) noexcept
+	MPMALLOC_INLINE_ALWAYS size_t wellons_hash(size_t value) noexcept
 	{
 		// Chris Wellons hash32 & hash64 https://nullprogram.com/blog/2018/07/31/
 
@@ -324,7 +324,7 @@ namespace mpmm
 		inline size_t small_cache_size;
 	}
 
-	MPMM_INLINE_ALWAYS size_t chunk_size_of(size_t size) noexcept
+	MPMALLOC_INLINE_ALWAYS size_t chunk_size_of(size_t size) noexcept
 	{
 		size *= params::BLOCK_ALLOCATOR_MAX_CAPACITY;
 		if (size > params::chunk_size)
@@ -333,7 +333,7 @@ namespace mpmm
 		return size;
 	}
 
-#ifdef MPMM_WINDOWS
+#ifdef MPMALLOC_WINDOWS
 	namespace os
 	{
 		using thread_id = DWORD;
@@ -344,38 +344,38 @@ namespace mpmm
 		inline decltype(VirtualAlloc2)* aligned_allocate;
 		inline uint64_t qpc_frequency;
 
-		MPMM_INLINE_ALWAYS static void init() noexcept
+		MPMALLOC_INLINE_ALWAYS static void init() noexcept
 		{
 			SYSTEM_INFO info;
 			GetSystemInfo(&info);
 			params::processor_count = info.dwNumberOfProcessors;
 			params::page_size = info.dwPageSize;
-			MPMM_INVARIANT(params::page_size <= params::SMALL_SIZE_CLASSES[params::SIZE_CLASS_COUNT - 1]);
+			MPMALLOC_INVARIANT(params::page_size <= params::SMALL_SIZE_CLASSES[params::SIZE_CLASS_COUNT - 1]);
 			params::chunk_size = info.dwPageSize * std::hardware_constructive_interference_size * 8;
 			constexpr size_t min_chunk_size = 32 * 4096;
-			MPMM_INVARIANT(params::chunk_size >= min_chunk_size);
+			MPMALLOC_INVARIANT(params::chunk_size >= min_chunk_size);
 			params::page_size_log2 = floor_log2(params::page_size);
 			params::chunk_size_log2 = floor_log2(params::chunk_size);
 			max_address = info.lpMaximumApplicationAddress;
-			min_chunk = (void*)MPMM_ALIGN_ROUND((size_t)info.lpMinimumApplicationAddress, params::chunk_size);
+			min_chunk = (void*)MPMALLOC_ALIGN_ROUND((size_t)info.lpMinimumApplicationAddress, params::chunk_size);
 			HMODULE m = GetModuleHandle(TEXT("KernelBase.DLL"));
-			MPMM_INVARIANT(m != NULL);
+			MPMALLOC_INVARIANT(m != NULL);
 			aligned_allocate = (decltype(VirtualAlloc2)*)GetProcAddress(m, "VirtualAlloc2");
 			LARGE_INTEGER k;
 			(void)QueryPerformanceFrequency(&k);
 			qpc_frequency = k.QuadPart;
 		}
 
-		MPMM_INLINE_ALWAYS static void finalize() noexcept
+		MPMALLOC_INLINE_ALWAYS static void finalize() noexcept
 		{
 		}
 
-		MPMM_INLINE_ALWAYS static void* allocate(size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void* allocate(size_t size) noexcept
 		{
 			return VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 		}
 
-		MPMM_INLINE_ALWAYS static void* allocate_chunk_aligned(size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void* allocate_chunk_aligned(size_t size) noexcept
 		{
 			MEM_ADDRESS_REQUIREMENTS req = {};
 			req.Alignment = params::chunk_size;
@@ -387,59 +387,59 @@ namespace mpmm
 			return aligned_allocate(process_handle, nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, &param, 1);
 		}
 
-		MPMM_INLINE_ALWAYS static void deallocate(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void deallocate(void* ptr, size_t size) noexcept
 		{
-			MPMM_INVARIANT(ptr != nullptr);
+			MPMALLOC_INVARIANT(ptr != nullptr);
 			bool result = VirtualFree(ptr, 0, MEM_RELEASE);
-			MPMM_INVARIANT(result);
+			MPMALLOC_INVARIANT(result);
 		}
 
-		MPMM_INLINE_ALWAYS static void purge(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void purge(void* ptr, size_t size) noexcept
 		{
-			MPMM_INVARIANT(ptr != nullptr);
+			MPMALLOC_INVARIANT(ptr != nullptr);
 			(void)DiscardVirtualMemory(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS static void make_readwrite(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void make_readwrite(void* ptr, size_t size) noexcept
 		{
-			MPMM_INVARIANT(ptr != nullptr);
+			MPMALLOC_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READWRITE, &old);
 		}
 
-		MPMM_INLINE_ALWAYS static void make_readonly(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void make_readonly(void* ptr, size_t size) noexcept
 		{
-			MPMM_INVARIANT(ptr != nullptr);
+			MPMALLOC_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READONLY, &old);
 		}
 
-		MPMM_INLINE_ALWAYS static void make_noaccess(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void make_noaccess(void* ptr, size_t size) noexcept
 		{
-			MPMM_INVARIANT(ptr != nullptr);
+			MPMALLOC_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READWRITE, &old);
 		}
 
-		MPMM_INLINE_ALWAYS static uint32_t this_thread_id() noexcept
+		MPMALLOC_INLINE_ALWAYS static uint32_t this_thread_id() noexcept
 		{
 			return GetCurrentThreadId();
 		}
 
-		MPMM_INLINE_ALWAYS static uint32_t this_processor_index() noexcept
+		MPMALLOC_INLINE_ALWAYS static uint32_t this_processor_index() noexcept
 		{
 			PROCESSOR_NUMBER pn;
 			GetCurrentProcessorNumberEx(&pn);
 			return (pn.Group << 6) | pn.Number;
 		}
 
-		MPMM_INLINE_ALWAYS static bool does_thread_exist(thread_id id) noexcept
+		MPMALLOC_INLINE_ALWAYS static bool does_thread_exist(thread_id id) noexcept
 		{
 			HANDLE thread = OpenThread(SYNCHRONIZE, false, id);
 			if (thread == nullptr)
 				return false;
 			DWORD code = WaitForSingleObject(thread, 0);
-			MPMM_INVARIANT(code != WAIT_FAILED);
+			MPMALLOC_INVARIANT(code != WAIT_FAILED);
 			return code == WAIT_TIMEOUT;
 		}
 	}
@@ -462,57 +462,57 @@ namespace mpmm
 			static void (*make_noaccess)(void* ptr, size_t size) = os::make_noaccess;
 		}
 
-		MPMM_INLINE_ALWAYS static void init() noexcept
+		MPMALLOC_INLINE_ALWAYS static void init() noexcept
 		{
 			if (callbacks::init != nullptr)
 				callbacks::init();
 		}
 
-		MPMM_INLINE_ALWAYS static void finalize() noexcept
+		MPMALLOC_INLINE_ALWAYS static void finalize() noexcept
 		{
 			if (callbacks::finalize != nullptr)
 				callbacks::finalize();
 		}
 
-		MPMM_INLINE_ALWAYS static void* allocate(size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void* allocate(size_t size) noexcept
 		{
 			if (callbacks::allocate == nullptr)
 				return nullptr;
 			return callbacks::allocate(size);
 		}
 
-		MPMM_INLINE_ALWAYS static void* allocate_chunk_aligned(size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void* allocate_chunk_aligned(size_t size) noexcept
 		{
 			if (callbacks::allocate_chunk_aligned == nullptr)
 				return nullptr;
 			return callbacks::allocate_chunk_aligned(size);
 		}
 
-		MPMM_INLINE_ALWAYS static void deallocate(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void deallocate(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::deallocate != nullptr)
 				callbacks::deallocate(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS static void purge(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void purge(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::purge != nullptr)
 				callbacks::purge(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS static void make_readwrite(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void make_readwrite(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::make_readwrite != nullptr)
 				callbacks::make_readwrite(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS static void make_readonly(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void make_readonly(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::make_readonly != nullptr)
 				callbacks::make_readonly(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS static void make_noaccess(void* ptr, size_t size) noexcept
+		MPMALLOC_INLINE_ALWAYS static void make_noaccess(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::make_noaccess != nullptr)
 				callbacks::make_noaccess(ptr, size);
@@ -523,18 +523,18 @@ namespace mpmm
 
 	namespace romu2jr
 	{
-		MPMM_INLINE_ALWAYS static void init(uint64_t seed, uint64_t& x, uint64_t& y) noexcept
+		MPMALLOC_INLINE_ALWAYS static void init(uint64_t seed, uint64_t& x, uint64_t& y) noexcept
 		{
 			x = seed ^ 0x9e3779b97f4a7c15;
 			y = seed ^ 0xd1b54a32d192ed03;
 		}
 
-		MPMM_INLINE_ALWAYS static uint64_t next(uint64_t& x, uint64_t& y) noexcept
+		MPMALLOC_INLINE_ALWAYS static uint64_t next(uint64_t& x, uint64_t& y) noexcept
 		{
 			uint64_t result = x;
 			x = 15241094284759029579u * y;
 			y = y - result;
-			y = MPMM_ROL64(y, 27);
+			y = MPMALLOC_ROL64(y, 27);
 			return result;
 		}
 	}
@@ -550,14 +550,14 @@ namespace mpmm
 	{
 		free_list_node* head;
 
-		MPMM_INLINE_ALWAYS void push(void* ptr) noexcept
+		MPMALLOC_INLINE_ALWAYS void push(void* ptr) noexcept
 		{
 			free_list_node* nh = (free_list_node*)ptr;
 			nh->next = head;
 			head = nh;
 		}
 
-		MPMM_INLINE_ALWAYS void* pop() noexcept
+		MPMALLOC_INLINE_ALWAYS void* pop() noexcept
 		{
 			void* r = head;
 			if (r != nullptr)
@@ -565,7 +565,7 @@ namespace mpmm
 			return r;
 		}
 
-		MPMM_INLINE_ALWAYS void* peek() noexcept
+		MPMALLOC_INLINE_ALWAYS void* peek() noexcept
 		{
 			return head;
 		}
@@ -575,7 +575,7 @@ namespace mpmm
 	{
 		std::atomic<free_list_node*> head;
 
-		MPMM_INLINE_ALWAYS void push(void* ptr) noexcept
+		MPMALLOC_INLINE_ALWAYS void push(void* ptr) noexcept
 		{
 			free_list_node* new_head = (free_list_node*)ptr;
 			free_list_node* prior = head.exchange(new_head, std::memory_order_acquire);
@@ -583,12 +583,12 @@ namespace mpmm
 			std::atomic_thread_fence(std::memory_order_release);
 		}
 
-		MPMM_INLINE_ALWAYS void* peek() noexcept
+		MPMALLOC_INLINE_ALWAYS void* peek() noexcept
 		{
 			return head.load(std::memory_order_acquire);
 		}
 
-		MPMM_INLINE_ALWAYS free_list_node* pop_all() noexcept
+		MPMALLOC_INLINE_ALWAYS free_list_node* pop_all() noexcept
 		{
 			return head.exchange(nullptr, std::memory_order_acquire);
 		}
@@ -598,14 +598,14 @@ namespace mpmm
 	{
 		std::atomic<size_t> head;
 
-		MPMM_INLINE_ALWAYS void push(void* ptr) noexcept
+		MPMALLOC_INLINE_ALWAYS void push(void* ptr) noexcept
 		{
 			size_t counter_mask = params::chunk_size - 1;
 			size_t pointer_mask = ~counter_mask;
 
 			free_list_node* new_head = (free_list_node*)ptr;
 
-			for (;; MPMM_SPIN_WAIT)
+			for (;; MPMALLOC_SPIN_WAIT)
 			{
 				size_t prior = head.load(std::memory_order_acquire);
 				free_list_node* prior_head = (free_list_node*)(prior & pointer_mask);
@@ -620,11 +620,11 @@ namespace mpmm
 			}
 		}
 
-		MPMM_INLINE_ALWAYS void* pop() noexcept
+		MPMALLOC_INLINE_ALWAYS void* pop() noexcept
 		{
 			size_t counter_mask = params::chunk_size - 1;
 			size_t pointer_mask = ~counter_mask;
-			for (;; MPMM_SPIN_WAIT)
+			for (;; MPMALLOC_SPIN_WAIT)
 			{
 				size_t prior = head.load(std::memory_order_acquire);
 				free_list_node* prior_head = (free_list_node*)(prior & pointer_mask);
@@ -641,7 +641,7 @@ namespace mpmm
 			}
 		}
 
-		MPMM_INLINE_ALWAYS void* peek() noexcept
+		MPMALLOC_INLINE_ALWAYS void* peek() noexcept
 		{
 			size_t counter_mask = params::chunk_size - 1;
 			size_t pointer_mask = ~counter_mask;
@@ -661,11 +661,11 @@ namespace mpmm
 
 		std::atomic<head_type> head;
 
-		MPMM_INLINE_ALWAYS void push(void* new_head) noexcept
+		MPMALLOC_INLINE_ALWAYS void push(void* new_head) noexcept
 		{
 			head_type prior, desired;
 			desired.head = (free_list_node*)new_head;
-			for (;; MPMM_SPIN_WAIT)
+			for (;; MPMALLOC_SPIN_WAIT)
 			{
 				prior = head.load(std::memory_order_acquire);
 				desired.head->next = prior.head;
@@ -675,10 +675,10 @@ namespace mpmm
 			}
 		}
 
-		MPMM_INLINE_ALWAYS void* pop() noexcept
+		MPMALLOC_INLINE_ALWAYS void* pop() noexcept
 		{
 			head_type prior, desired;
-			for (;; MPMM_SPIN_WAIT)
+			for (;; MPMALLOC_SPIN_WAIT)
 			{
 				prior = head.load(std::memory_order_acquire);
 				if (prior.head == nullptr)
@@ -696,7 +696,7 @@ namespace mpmm
 
 	namespace chunk_cache
 	{
-		struct MPMM_SHARED_ATTR chunk_cache_shard
+		struct MPMALLOC_SHARED_ATTR chunk_cache_shard
 		{
 			static constexpr size_t GROUP_CAPACITY = sizeof(size_t) == sizeof(uint32_t) ? 11 : 7;
 
@@ -711,7 +711,7 @@ namespace mpmm
 				uint8_t hints[GROUP_CAPACITY];
 			};
 
-			struct MPMM_SHARED_ATTR group_type
+			struct MPMALLOC_SHARED_ATTR group_type
 			{
 				std::atomic<group_ctrl> ctrl;
 				std::atomic<size_t> keys[GROUP_CAPACITY];
@@ -889,7 +889,7 @@ namespace mpmm
 		{
 			void* r = try_allocate(size);
 			if (r == nullptr)
-				r = backend::allocate_chunk_aligned(MPMM_ALIGN_ROUND(size, params::chunk_size));
+				r = backend::allocate_chunk_aligned(MPMALLOC_ALIGN_ROUND(size, params::chunk_size));
 			return r;
 		}
 
@@ -907,7 +907,7 @@ namespace mpmm
 
 		size_t block_size_of(size_t size) noexcept
 		{
-			size_t r = MPMM_ALIGN_ROUND(size, params::chunk_size);
+			size_t r = MPMALLOC_ALIGN_ROUND(size, params::chunk_size);
 			if (r < params::chunk_size)
 				r = 0;
 			return r;
@@ -928,7 +928,7 @@ namespace mpmm
 
 	namespace shared_cache
 	{
-		struct MPMM_SHARED_ATTR shared_block_allocator
+		struct MPMALLOC_SHARED_ATTR shared_block_allocator
 		{
 			shared_block_allocator* next;
 			shared_block_allocator_recover_list* recovered;
@@ -938,9 +938,9 @@ namespace mpmm
 			std::atomic<uint32_t> begin_free_mask;
 			std::atomic<uint32_t> free_count;
 			std::atomic_bool unlinked;
-			MPMM_SHARED_ATTR std::atomic<uint64_t> free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
+			MPMALLOC_SHARED_ATTR std::atomic<uint64_t> free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
 
-			MPMM_INLINE_ALWAYS void init(uint8_t block_size_log2, shared_block_allocator_recover_list* recovered, uint8_t* buffer) noexcept
+			MPMALLOC_INLINE_ALWAYS void init(uint8_t block_size_log2, shared_block_allocator_recover_list* recovered, uint8_t* buffer) noexcept
 			{
 				this->next = nullptr;
 				this->recovered = recovered;
@@ -958,12 +958,12 @@ namespace mpmm
 					non_atomic_store(free_map[mask_count], (1UI64 << bit_count) - 1UI64);
 			}
 
-			MPMM_INLINE_ALWAYS uint32_t index_of(void* ptr) const noexcept
+			MPMALLOC_INLINE_ALWAYS uint32_t index_of(void* ptr) const noexcept
 			{
 				return ((uint32_t)((uint8_t*)ptr - buffer)) >> block_size_log2;
 			}
 
-			MPMM_INLINE_ALWAYS void* allocate() noexcept
+			MPMALLOC_INLINE_ALWAYS void* allocate() noexcept
 			{
 				while (true)
 				{
@@ -972,7 +972,7 @@ namespace mpmm
 						if (free_count.load(std::memory_order_acquire) == 0)
 							return nullptr;
 
-						for (;; MPMM_SPIN_WAIT)
+						for (;; MPMALLOC_SPIN_WAIT)
 						{
 							uint64_t prior = free_map[i].load(std::memory_order_acquire);
 							if (prior == 0)
@@ -990,14 +990,14 @@ namespace mpmm
 				}
 			}
 
-			MPMM_INLINE_NEVER void recover() noexcept
+			MPMALLOC_INLINE_NEVER void recover() noexcept
 			{
 				bool expected = true;
 				if (unlinked.compare_exchange_strong(expected, false, std::memory_order_acquire, std::memory_order_relaxed))
 					recovered->push(this);
 			}
 
-			MPMM_INLINE_ALWAYS void deallocate(void* ptr) noexcept
+			MPMALLOC_INLINE_ALWAYS void deallocate(void* ptr) noexcept
 			{
 				uint32_t index = index_of(ptr);
 				uint32_t mask_index = index >> 6;
@@ -1008,7 +1008,7 @@ namespace mpmm
 					recover();
 			}
 
-			MPMM_INLINE_ALWAYS bool owns(void* ptr) noexcept
+			MPMALLOC_INLINE_ALWAYS bool owns(void* ptr) noexcept
 			{
 				if ((uint8_t*)ptr < buffer)
 					return false;
@@ -1021,7 +1021,7 @@ namespace mpmm
 			}
 		};
 
-		struct MPMM_SHARED_ATTR shared_allocator_list
+		struct MPMALLOC_SHARED_ATTR shared_allocator_list
 		{
 			std::atomic<shared_block_allocator*> head;
 
@@ -1030,10 +1030,10 @@ namespace mpmm
 				return head.load(std::memory_order_acquire);
 			}
 
-			MPMM_INLINE_ALWAYS void push(shared_block_allocator* new_head) noexcept
+			MPMALLOC_INLINE_ALWAYS void push(shared_block_allocator* new_head) noexcept
 			{
 				shared_block_allocator* prior;
-				for (;; MPMM_SPIN_WAIT)
+				for (;; MPMALLOC_SPIN_WAIT)
 				{
 					prior = head.load(std::memory_order_acquire);
 					new_head->next = prior;
@@ -1042,7 +1042,7 @@ namespace mpmm
 				}
 			}
 
-			MPMM_INLINE_ALWAYS void pop_if_equal(shared_block_allocator* expected) noexcept
+			MPMALLOC_INLINE_ALWAYS void pop_if_equal(shared_block_allocator* expected) noexcept
 			{
 				if (head.compare_exchange_strong(expected, expected->next, std::memory_order_acquire, std::memory_order_relaxed))
 					expected->unlinked.store(true, std::memory_order_release);
@@ -1061,7 +1061,7 @@ namespace mpmm
 
 			constexpr void set(const void* ptr, bool flag) noexcept
 			{
-				MPMM_INVARIANT(((size_t)ptr & 1) == 0);
+				MPMALLOC_INVARIANT(((size_t)ptr & 1) == 0);
 				mask = (size_t)ptr | (size_t)flag;
 			}
 
@@ -1077,7 +1077,7 @@ namespace mpmm
 			}
 		};
 
-		struct MPMM_SHARED_ATTR shared_block_allocator_group
+		struct MPMALLOC_SHARED_ATTR shared_block_allocator_group
 		{
 			std::atomic<uint64_t> presence[8];
 			shared_block_allocator allocators[256];
@@ -1094,10 +1094,10 @@ namespace mpmm
 			uint32_t middle_index = (uint32_t)(id & branch_size_mask);
 			id >>= branch_size_log2;
 			uint8_t leaf_index = (uint8_t)id;
-			MPMM_INVARIANT((id >> 8) == 0);
+			MPMALLOC_INVARIANT((id >> 8) == 0);
 			auto& root = chunk_lookup_roots[root_index];
 			std::atomic<shared_block_allocator_group*>* branch;
-			for (std::atomic<shared_block_allocator_group*>* tmp = nullptr;; MPMM_SPIN_WAIT)
+			for (std::atomic<shared_block_allocator_group*>* tmp = nullptr;; MPMALLOC_SPIN_WAIT)
 			{
 				branch = root.load(std::memory_order_acquire);
 				if (branch != nullptr)
@@ -1116,7 +1116,7 @@ namespace mpmm
 			}
 			std::atomic<shared_block_allocator_group*>& leaf_ptr = branch[middle_index];
 			shared_block_allocator_group* leaf;
-			for (shared_block_allocator_group* tmp = nullptr;; MPMM_SPIN_WAIT)
+			for (shared_block_allocator_group* tmp = nullptr;; MPMALLOC_SPIN_WAIT)
 			{
 				leaf = leaf_ptr.load(std::memory_order_acquire);
 				if (leaf != nullptr)
@@ -1136,7 +1136,7 @@ namespace mpmm
 			uint8_t leaf_mask_index = leaf_index >> 6;
 			uint8_t leaf_bit_index = leaf_index & 63;
 			uint64_t prior = leaf->presence[leaf_mask_index].fetch_or(1UI64 << leaf_bit_index, std::memory_order_acquire);
-			MPMM_INVARIANT(!bit_test(prior, leaf_bit_index));
+			MPMALLOC_INVARIANT(!bit_test(prior, leaf_bit_index));
 			return &leaf->allocators[leaf_index];
 		}
 
@@ -1168,20 +1168,20 @@ namespace mpmm
 			id >>= branch_size_log2;
 			uint8_t leaf_index = (uint8_t)id;
 			std::atomic<shared_block_allocator_group*>* branch = chunk_lookup_roots[root_index].load(std::memory_order_acquire);
-			MPMM_INVARIANT(branch != nullptr);
+			MPMALLOC_INVARIANT(branch != nullptr);
 			shared_block_allocator_group* leaf = branch[middle_index].load(std::memory_order_acquire);
-			MPMM_INVARIANT(leaf != nullptr);
+			MPMALLOC_INVARIANT(leaf != nullptr);
 			uint8_t leaf_mask_index = leaf_index >> 6;
 			uint8_t leaf_bit_index = leaf_index & 63;
 			uint64_t prior = leaf->presence[leaf_mask_index].fetch_and(~(1UI64 << leaf_bit_index), std::memory_order_release);
-			MPMM_INVARIANT(bit_test(prior, leaf_bit_index));
+			MPMALLOC_INVARIANT(bit_test(prior, leaf_bit_index));
 		}
 #endif
 
 		shared_allocator_list* bins;
 		shared_block_allocator_recover_list* recovered;
 
-		MPMM_INLINE_ALWAYS static size_t chunk_id_of(void* data) noexcept
+		MPMALLOC_INLINE_ALWAYS static size_t chunk_id_of(void* data) noexcept
 		{
 			size_t mask = (size_t)data;
 			mask >>= params::chunk_size_log2;
@@ -1236,7 +1236,7 @@ namespace mpmm
 			if (allocator == nullptr)
 				return nullptr;
 			void* r = allocator->allocate();
-			MPMM_INVARIANT(r != nullptr);
+			MPMALLOC_INVARIANT(r != nullptr);
 			bins[sc].push(allocator);
 			return r;
 		}
@@ -1299,7 +1299,7 @@ namespace mpmm
 
 	namespace thread_cache
 	{
-		struct MPMM_SHARED_ATTR intrusive_block_allocator
+		struct MPMALLOC_SHARED_ATTR intrusive_block_allocator
 		{
 			intrusive_block_allocator* next;
 			recovered_list* recovered;
@@ -1309,15 +1309,15 @@ namespace mpmm
 			uint32_t capacity;
 			std::atomic<os::thread_id> owning_thread;
 			std::atomic_bool unlinked;
-			MPMM_SHARED_ATTR uint64_t free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
-			MPMM_SHARED_ATTR std::atomic<uint64_t> marked_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
+			MPMALLOC_SHARED_ATTR uint64_t free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
+			MPMALLOC_SHARED_ATTR std::atomic<uint64_t> marked_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
 
-			MPMM_INLINE_ALWAYS void init(uint32_t block_size, size_t chunk_size, recovered_list* recovered) noexcept
+			MPMALLOC_INLINE_ALWAYS void init(uint32_t block_size, size_t chunk_size, recovered_list* recovered) noexcept
 			{
 				this->next = nullptr;
 				this->recovered = recovered;
 				capacity = (uint32_t)(chunk_size / block_size);
-				uint32_t reserved_count = (uint32_t)MPMM_ALIGN_ROUND(sizeof(intrusive_block_allocator), (size_t)block_size) / block_size;
+				uint32_t reserved_count = (uint32_t)MPMALLOC_ALIGN_ROUND(sizeof(intrusive_block_allocator), (size_t)block_size) / block_size;
 				free_count = capacity - reserved_count;
 				begin_free_mask = 0;
 				this->block_size = block_size;
@@ -1338,7 +1338,7 @@ namespace mpmm
 					free_map[0] &= ~((1UI64 << bit_count) - 1UI64);
 			}
 
-			MPMM_INLINE_NEVER uint32_t reclaim() noexcept
+			MPMALLOC_INLINE_NEVER uint32_t reclaim() noexcept
 			{
 				uint32_t freed_count = 0;
 				for (uint32_t i = 0; i != params::BLOCK_ALLOCATOR_MASK_COUNT; ++i)
@@ -1347,18 +1347,18 @@ namespace mpmm
 					{
 						uint64_t mask = marked_map[i].exchange(0, std::memory_order_acquire);
 						free_map[i] |= mask;
-						freed_count += MPMM_POPCOUNT64(mask);
+						freed_count += MPMALLOC_POPCOUNT64(mask);
 					}
 				}
 				return freed_count;
 			}
 
-			MPMM_INLINE_ALWAYS uint32_t index_of(void* ptr) const noexcept
+			MPMALLOC_INLINE_ALWAYS uint32_t index_of(void* ptr) const noexcept
 			{
 				return ((uint32_t)((uint8_t*)ptr - (uint8_t*)this)) / block_size;
 			}
 
-			MPMM_INLINE_ALWAYS void* allocate() noexcept
+			MPMALLOC_INLINE_ALWAYS void* allocate() noexcept
 			{
 				for (uint32_t mask_index = begin_free_mask; mask_index != params::BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
 				{
@@ -1376,20 +1376,20 @@ namespace mpmm
 						return (uint8_t*)this + offset;
 					}
 				}
-				MPMM_UNREACHABLE;
+				MPMALLOC_UNREACHABLE;
 			}
 
-			MPMM_INLINE_NEVER void final_recover(os::thread_id prior_owner) noexcept
+			MPMALLOC_INLINE_NEVER void final_recover(os::thread_id prior_owner) noexcept
 			{
 				if (owning_thread.compare_exchange_strong(prior_owner, os::this_thread_id(), std::memory_order_acquire, std::memory_order_relaxed))
 				{
 					reclaim();
 					if (free_count == capacity)
-						mpmm::deallocate(this, chunk_size_of(block_size));
+						mpmalloc::deallocate(this, chunk_size_of(block_size));
 				}
 			}
 
-			MPMM_INLINE_NEVER void recover() noexcept
+			MPMALLOC_INLINE_NEVER void recover() noexcept
 			{
 				os::thread_id prior_owner = owning_thread.load(std::memory_order_acquire);
 				if (!os::does_thread_exist(prior_owner))
@@ -1399,7 +1399,7 @@ namespace mpmm
 					recovered->push(this);
 			}
 
-			MPMM_INLINE_ALWAYS void deallocate(void* ptr) noexcept
+			MPMALLOC_INLINE_ALWAYS void deallocate(void* ptr) noexcept
 			{
 				++free_count;
 				uint32_t index = index_of(ptr);
@@ -1412,7 +1412,7 @@ namespace mpmm
 					recover();
 			}
 
-			MPMM_INLINE_ALWAYS void deallocate_shared(void* ptr) noexcept
+			MPMALLOC_INLINE_ALWAYS void deallocate_shared(void* ptr) noexcept
 			{
 				uint32_t index = index_of(ptr);
 				uint32_t mask_index = index >> 6;
@@ -1422,7 +1422,7 @@ namespace mpmm
 					recover();
 			}
 
-			MPMM_INLINE_ALWAYS bool owns(void* ptr) noexcept
+			MPMALLOC_INLINE_ALWAYS bool owns(void* ptr) noexcept
 			{
 				if ((uint8_t*)ptr < (uint8_t*)this)
 					return false;
@@ -1434,16 +1434,16 @@ namespace mpmm
 				return bit_test(free_map[mask_index], bit_index);
 			}
 
-			MPMM_INLINE_ALWAYS
+			MPMALLOC_INLINE_ALWAYS
 				static intrusive_block_allocator* allocator_of(void* ptr, size_t chunk_size) noexcept
 			{
 				size_t mask = (size_t)ptr;
-				mask = MPMM_ALIGN_FLOOR(mask, chunk_size);
+				mask = MPMALLOC_ALIGN_FLOOR(mask, chunk_size);
 				return (intrusive_block_allocator*)mask;
 			}
 		};
 
-		struct MPMM_SHARED_ATTR cache_aligned_recovered_list
+		struct MPMALLOC_SHARED_ATTR cache_aligned_recovered_list
 		{
 			recovered_list list;
 		};
@@ -1463,7 +1463,7 @@ namespace mpmm
 			for (uint8_t i = 0; i != params::SIZE_CLASS_COUNT; ++i)
 				if (params::SMALL_SIZE_CLASSES[i] >= size)
 					return i;
-			MPMM_UNREACHABLE;
+			MPMALLOC_UNREACHABLE;
 		}
 
 		size_t block_size_of_unsafe(size_t size) noexcept
@@ -1478,21 +1478,21 @@ namespace mpmm
 			return block_size_of_unsafe(size);
 		}
 
-		MPMM_INLINE_NEVER
+		MPMALLOC_INLINE_NEVER
 			static void* allocate_fallback(uint8_t sc) noexcept
 		{
 			cache_aligned_recovered_list& e = here.small_recovered[sc];
 			intrusive_block_allocator* head = (intrusive_block_allocator*)e.list.pop_all();
 			if (head == nullptr)
 				return nullptr;
-			MPMM_INVARIANT(head->free_count != 0);
+			MPMALLOC_INVARIANT(head->free_count != 0);
 			void* r = head->allocate();
 			if (head->free_count == 0)
 			{
 				head->unlinked.store(true, std::memory_order_release);
 				head = (intrusive_block_allocator*)head->next;
 			}
-			MPMM_INVARIANT(here.small_bins[sc].head == nullptr);
+			MPMALLOC_INVARIANT(here.small_bins[sc].head == nullptr);
 			here.small_bins[sc].head = (free_list_node*)head;
 			return r;
 		}
@@ -1503,7 +1503,7 @@ namespace mpmm
 			intrusive_block_allocator* head = (intrusive_block_allocator*)bin.peek();
 			if (head == nullptr)
 				return allocate_fallback(sc);
-			MPMM_INVARIANT(head->free_count != 0);
+			MPMALLOC_INVARIANT(head->free_count != 0);
 			void* r = head->allocate();
 			if (head->free_count == 0)
 			{
@@ -1521,7 +1521,7 @@ namespace mpmm
 
 		void* allocate(size_t size) noexcept
 		{
-#ifndef MPMM_NO_ZERO_SIZE_CHECK
+#ifndef MPMALLOC_NO_ZERO_SIZE_CHECK
 			size |= (size == 0);
 #endif
 			uint8_t sc = size_class_of(size);
@@ -1530,21 +1530,21 @@ namespace mpmm
 				return r;
 			size = block_size_of_unsafe(size);
 			size_t chunk_size = chunk_size_of(size);
-			intrusive_block_allocator* allocator = (intrusive_block_allocator*)mpmm::allocate(chunk_size);
+			intrusive_block_allocator* allocator = (intrusive_block_allocator*)mpmalloc::allocate(chunk_size);
 			if (allocator == nullptr)
 				return nullptr;
 			allocator->init((uint32_t)size, chunk_size, &(here.small_recovered[sc].list));
 			non_atomic_store(allocator->owning_thread, os::this_thread_id());
-			MPMM_INVARIANT(allocator->free_count != 0);
+			MPMALLOC_INVARIANT(allocator->free_count != 0);
 			r = allocator->allocate();
-			MPMM_INVARIANT(allocator->free_count != 0);
+			MPMALLOC_INVARIANT(allocator->free_count != 0);
 			here.small_bins[sc].push(allocator);
 			return r;
 		}
 
 		void deallocate(void* ptr, size_t size) noexcept
 		{
-#ifndef MPMM_NO_ZERO_SIZE_CHECK
+#ifndef MPMALLOC_NO_ZERO_SIZE_CHECK
 			size |= (size == 0);
 #endif
 			uint8_t sc = size_class_of(size);
@@ -1623,8 +1623,8 @@ namespace mpmm
 			r = shared_cache::allocate(size);
 		else
 			r = chunk_cache::allocate(size);
-#if defined(MPMM_DEBUG) && !defined(MPMM_NO_JUNK)
-		(void)memset(r, MPMM_JUNK_VALUE, size);
+#if defined(MPMALLOC_DEBUG) && !defined(MPMALLOC_NO_JUNK)
+		(void)memset(r, MPMALLOC_JUNK_VALUE, size);
 #endif
 		return r;
 	}
@@ -1637,7 +1637,7 @@ namespace mpmm
 
 	void* reallocate(void* ptr, size_t old_size, size_t new_size) noexcept
 	{
-		MPMM_INVARIANT(ptr != nullptr || old_size == 0);
+		MPMALLOC_INVARIANT(ptr != nullptr || old_size == 0);
 		if (try_expand(ptr, old_size, new_size))
 			return ptr;
 		void* const r = allocate(new_size);
