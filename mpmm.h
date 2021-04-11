@@ -11,17 +11,52 @@
 	limitations under the License.
 */
 
+#ifndef MPMM_INCLUDED
+#define MPMM_INCLUDED
 #include <cstdint>
 
 
 
 namespace mpmm
 {
-	void init() noexcept;
-	bool is_initialized() noexcept;
+	namespace fn_ptr
+	{
+		using init = void(*)();
+		using finalize = void(*)();
+		using allocate = void* (*)(size_t);
+		using allocate_chunk_aligned = void* (*)(size_t);
+		using try_expand = bool (*)(void*, size_t, size_t);
+		using reallocate = void* (*)(void*, size_t, size_t);
+		using deallocate = void (*)(void*, size_t);
+		using purge = deallocate;
+		using make_readwrite = deallocate;
+		using make_readonly = deallocate;
+		using make_noaccess = deallocate;
+	}
+
+	struct backend_options
+	{
+		fn_ptr::init init;
+		fn_ptr::finalize finalize;
+		fn_ptr::allocate allocate;
+		fn_ptr::allocate_chunk_aligned allocate_chunk_aligned;
+		fn_ptr::try_expand try_expand;
+		fn_ptr::reallocate reallocate;
+		fn_ptr::deallocate deallocate;
+		fn_ptr::purge purge;
+		fn_ptr::make_readwrite make_readwrite;
+		fn_ptr::make_readonly make_readonly;
+		fn_ptr::make_noaccess make_noaccess;
+	};
+
+	struct init_options
+	{
+		const backend_options* backend;
+	};
+
+	void init(const init_options* options = nullptr) noexcept;
 	void finalize() noexcept;
 	void init_thread() noexcept;
-	bool is_initialized_thread() noexcept;
 	void finalize_thread() noexcept;
 
 	[[nodiscard]]
@@ -70,6 +105,7 @@ namespace mpmm
 		size_t purge() noexcept;
 	}
 }
+#endif
 
 
 
@@ -293,7 +329,7 @@ namespace mpmm
 		inline decltype(VirtualAlloc2)* aligned_allocate;
 		inline uint64_t qpc_frequency;
 
-		MPMM_INLINE_ALWAYS void init() noexcept
+		MPMM_INLINE_ALWAYS static void init() noexcept
 		{
 			SYSTEM_INFO info;
 			GetSystemInfo(&info);
@@ -314,12 +350,16 @@ namespace mpmm
 			qpc_frequency = k.QuadPart;
 		}
 
-		MPMM_INLINE_ALWAYS void* allocate(size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void finalize() noexcept
+		{
+		}
+
+		MPMM_INLINE_ALWAYS static void* allocate(size_t size) noexcept
 		{
 			return VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 		}
 
-		MPMM_INLINE_ALWAYS void* allocate_chunk_aligned(size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void* allocate_chunk_aligned(size_t size) noexcept
 		{
 			MEM_ADDRESS_REQUIREMENTS req = {};
 			req.Alignment = params::chunk_size;
@@ -331,53 +371,53 @@ namespace mpmm
 			return aligned_allocate(process_handle, nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, &param, 1);
 		}
 
-		MPMM_INLINE_ALWAYS void deallocate(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void deallocate(void* ptr, size_t size) noexcept
 		{
 			MPMM_INVARIANT(ptr != nullptr);
 			bool result = VirtualFree(ptr, 0, MEM_RELEASE);
 			MPMM_INVARIANT(result);
 		}
 
-		MPMM_INLINE_ALWAYS void purge(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void purge(void* ptr, size_t size) noexcept
 		{
 			MPMM_INVARIANT(ptr != nullptr);
 			(void)DiscardVirtualMemory(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS void make_readwrite(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void make_readwrite(void* ptr, size_t size) noexcept
 		{
 			MPMM_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READWRITE, &old);
 		}
 
-		MPMM_INLINE_ALWAYS void make_readonly(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void make_readonly(void* ptr, size_t size) noexcept
 		{
 			MPMM_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READONLY, &old);
 		}
 
-		MPMM_INLINE_ALWAYS void make_noaccess(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void make_noaccess(void* ptr, size_t size) noexcept
 		{
 			MPMM_INVARIANT(ptr != nullptr);
 			DWORD old;
 			(void)VirtualProtect(ptr, size, PAGE_READWRITE, &old);
 		}
 
-		MPMM_INLINE_ALWAYS uint32_t this_thread_id() noexcept
+		MPMM_INLINE_ALWAYS static uint32_t this_thread_id() noexcept
 		{
 			return GetCurrentThreadId();
 		}
 
-		MPMM_INLINE_ALWAYS uint32_t this_processor_index() noexcept
+		MPMM_INLINE_ALWAYS static uint32_t this_processor_index() noexcept
 		{
 			PROCESSOR_NUMBER pn;
 			GetCurrentProcessorNumberEx(&pn);
 			return (pn.Group << 6) | pn.Number;
 		}
 
-		MPMM_INLINE_ALWAYS bool does_thread_exist(thread_id id) noexcept
+		MPMM_INLINE_ALWAYS static bool does_thread_exist(thread_id id) noexcept
 		{
 			HANDLE thread = OpenThread(SYNCHRONIZE, false, id);
 			if (thread == nullptr)
@@ -395,61 +435,68 @@ namespace mpmm
 	{
 		namespace callbacks
 		{
-			inline void (*init)() = os::init;
-			inline void* (*allocate)(size_t size) = os::allocate;
-			inline void* (*allocate_chunk_aligned)(size_t size) = os::allocate_chunk_aligned;
-			inline void (*deallocate)(void* ptr, size_t size) = os::deallocate;
-			inline void (*purge)(void* ptr, size_t size) = os::purge;
-			inline void (*make_readwrite)(void* ptr, size_t size) = os::make_readwrite;
-			inline void (*make_readonly)(void* ptr, size_t size) = os::make_readonly;
-			inline void (*make_noaccess)(void* ptr, size_t size) = os::make_noaccess;
+			static void (*init)() = os::init;
+			static void (*finalize)() = os::finalize;
+			static void* (*allocate)(size_t size) = os::allocate;
+			static void* (*allocate_chunk_aligned)(size_t size) = os::allocate_chunk_aligned;
+			static void (*deallocate)(void* ptr, size_t size) = os::deallocate;
+			static void (*purge)(void* ptr, size_t size) = os::purge;
+			static void (*make_readwrite)(void* ptr, size_t size) = os::make_readwrite;
+			static void (*make_readonly)(void* ptr, size_t size) = os::make_readonly;
+			static void (*make_noaccess)(void* ptr, size_t size) = os::make_noaccess;
 		}
 
-		MPMM_INLINE_ALWAYS void init() noexcept
+		MPMM_INLINE_ALWAYS static void init() noexcept
 		{
 			if (callbacks::init != nullptr)
 				callbacks::init();
 		}
 
-		MPMM_INLINE_ALWAYS void* allocate(size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void finalize() noexcept
+		{
+			if (callbacks::finalize != nullptr)
+				callbacks::finalize();
+		}
+
+		MPMM_INLINE_ALWAYS static void* allocate(size_t size) noexcept
 		{
 			if (callbacks::allocate == nullptr)
 				return nullptr;
 			return callbacks::allocate(size);
 		}
 
-		MPMM_INLINE_ALWAYS void* allocate_chunk_aligned(size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void* allocate_chunk_aligned(size_t size) noexcept
 		{
 			if (callbacks::allocate_chunk_aligned == nullptr)
 				return nullptr;
 			return callbacks::allocate_chunk_aligned(size);
 		}
 
-		MPMM_INLINE_ALWAYS void deallocate(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void deallocate(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::deallocate != nullptr)
 				callbacks::deallocate(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS void purge(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void purge(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::purge != nullptr)
 				callbacks::purge(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS void make_readwrite(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void make_readwrite(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::make_readwrite != nullptr)
 				callbacks::make_readwrite(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS void make_readonly(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void make_readonly(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::make_readonly != nullptr)
 				callbacks::make_readonly(ptr, size);
 		}
 
-		MPMM_INLINE_ALWAYS void make_noaccess(void* ptr, size_t size) noexcept
+		MPMM_INLINE_ALWAYS static void make_noaccess(void* ptr, size_t size) noexcept
 		{
 			if (callbacks::make_noaccess != nullptr)
 				callbacks::make_noaccess(ptr, size);
@@ -460,13 +507,13 @@ namespace mpmm
 
 	namespace romu2jr
 	{
-		static void init(uint64_t seed, uint64_t& x, uint64_t& y) noexcept
+		MPMM_INLINE_ALWAYS static void init(uint64_t seed, uint64_t& x, uint64_t& y) noexcept
 		{
 			x = seed ^ 0x9e3779b97f4a7c15;
 			y = seed ^ 0xd1b54a32d192ed03;
 		}
 
-		static uint64_t next(uint64_t& x, uint64_t& y) noexcept
+		MPMM_INLINE_ALWAYS static uint64_t next(uint64_t& x, uint64_t& y) noexcept
 		{
 			uint64_t result = x;
 			x = 15241094284759029579u * y;
@@ -1512,27 +1559,36 @@ namespace mpmm
 		}
 	}
 
-	void init() noexcept
+	void init(const init_options* options) noexcept
 	{
+		if (options != nullptr && options->backend != nullptr)
+		{
+			backend::callbacks::init = options->backend->init;
+			backend::callbacks::finalize = options->backend->finalize;
+			backend::callbacks::allocate = options->backend->allocate;
+			backend::callbacks::allocate_chunk_aligned = options->backend->allocate_chunk_aligned;
+			backend::callbacks::deallocate = options->backend->deallocate;
+			backend::callbacks::purge = options->backend->purge;
+			backend::callbacks::make_readwrite = options->backend->make_readwrite;
+			backend::callbacks::make_readonly = options->backend->make_readonly;
+			backend::callbacks::make_noaccess = options->backend->make_noaccess;
+		}
+
 		backend::init();
-		shared_cache::init();
 		chunk_cache::init();
+		shared_cache::init();
 	}
 
 	void finalize() noexcept
 	{
-		chunk_cache::finalize();
 		shared_cache::finalize();
+		chunk_cache::finalize();
+		backend::init();
 	}
 
 	void init_thread() noexcept
 	{
 		thread_cache::init();
-	}
-
-	bool is_initialized_thread() noexcept
-	{
-		return true;
 	}
 
 	void finalize_thread() noexcept
