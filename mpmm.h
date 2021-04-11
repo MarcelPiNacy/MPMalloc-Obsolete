@@ -54,9 +54,22 @@ namespace mpmm
 		const backend_options* backend;
 	};
 
+	/// <summary>
+	/// Initializes the global state of the library.
+	/// </summary>
+	/// <param name="options">Either nullptr or a valid pointer to an init_options record.</param>
 	void init(const init_options* options = nullptr) noexcept;
+	/// <summary>
+	/// Cleans up the global state of the library.
+	/// </summary>
 	void finalize() noexcept;
+	/// <summary>
+	/// Initializes the thread-local state of the library.
+	/// </summary>
 	void init_thread() noexcept;
+	/// <summary>
+	/// Cleans up the thread-local state of the library.
+	/// </summary>
 	void finalize_thread() noexcept;
 
 	[[nodiscard]]
@@ -147,6 +160,8 @@ namespace mpmm
 #endif
 
 #ifdef _MSVC_LANG
+#define MPMM_LIKELY_IF(CONDITION) if ((CONDITION))
+#define MPMM_UNLIKELY_IF(CONDITION) if ((CONDITION))
 #define MPMM_ROL64(MASK, COUNT)  ((uint8_t)_rotl64((MASK), (COUNT)))
 #define MPMM_POPCOUNT8(MASK)  ((uint8_t)__popcnt16((MASK)))
 #define MPMM_POPCOUNT16(MASK) ((uint8_t)__popcnt16((MASK)))
@@ -335,6 +350,7 @@ namespace mpmm
 			GetSystemInfo(&info);
 			params::processor_count = info.dwNumberOfProcessors;
 			params::page_size = info.dwPageSize;
+			MPMM_INVARIANT(params::page_size <= params::SMALL_SIZE_CLASSES[params::SIZE_CLASS_COUNT - 1]);
 			params::chunk_size = info.dwPageSize * std::hardware_constructive_interference_size * 8;
 			constexpr size_t min_chunk_size = 32 * 4096;
 			MPMM_INVARIANT(params::chunk_size >= min_chunk_size);
@@ -937,7 +953,7 @@ namespace mpmm
 				uint32_t mask_count = capacity >> 6;
 				uint32_t bit_count = capacity & 63;
 				if (mask_count != 0)
-					memset(free_map, 0xff, mask_count * sizeof(uint64_t));
+					(void)memset(free_map, 0xff, mask_count * sizeof(uint64_t));
 				if (bit_count != 0)
 					non_atomic_store(free_map[mask_count], (1UI64 << bit_count) - 1UI64);
 			}
@@ -1311,13 +1327,13 @@ namespace mpmm
 				uint32_t mask_count = capacity >> 6;
 				uint32_t bit_count = capacity & 63;
 				if (mask_count != 0)
-					memset(free_map, 0xff, mask_count * sizeof(uint64_t));
+					(void)memset(free_map, 0xff, mask_count * sizeof(uint64_t));
 				if (bit_count != 0)
 					free_map[mask_count] = (1UI64 << bit_count) - 1UI64;
 				mask_count = reserved_count >> 6;
 				bit_count = reserved_count & 63;
 				if (mask_count != 0)
-					memset(free_map, 0, mask_count * sizeof(uint64_t));
+					(void)memset(free_map, 0, mask_count * sizeof(uint64_t));
 				if (bit_count != 0)
 					free_map[0] &= ~((1UI64 << bit_count) - 1UI64);
 			}
@@ -1598,6 +1614,8 @@ namespace mpmm
 
 	void* allocate(size_t size) noexcept
 	{
+		if (size == 0)
+			return nullptr;
 		void* r;
 		if (size <= params::page_size)
 			r = thread_cache::allocate(size);
@@ -1613,24 +1631,27 @@ namespace mpmm
 
 	bool try_expand(void* ptr, size_t old_size, size_t new_size) noexcept
 	{
-		return block_size_of(old_size) >= new_size;
+		size_t rounded_old_size = block_size_of(old_size);
+		return rounded_old_size >= new_size;
 	}
 
 	void* reallocate(void* ptr, size_t old_size, size_t new_size) noexcept
 	{
+		MPMM_INVARIANT(ptr != nullptr || old_size == 0);
 		if (try_expand(ptr, old_size, new_size))
 			return ptr;
 		void* const r = allocate(new_size);
-		if (r != nullptr)
-		{
-			(void)memcpy(r, ptr, old_size);
-			deallocate(ptr, old_size);
-		}
+		if (r == nullptr)
+			return r;
+		(void)memcpy(r, ptr, old_size);
+		deallocate(ptr, old_size);
 		return r;
 	}
 
 	void deallocate(void* ptr, size_t size) noexcept
 	{
+		if (ptr == nullptr)
+			return;
 		if (size <= params::page_size)
 			return thread_cache::deallocate(ptr, size);
 		if (size < params::chunk_size)
