@@ -204,6 +204,11 @@ namespace mpmalloc
 
 namespace mpmalloc
 {
+	MPMALLOC_INLINE_ALWAYS size_t optional(bool condition, size_t value)
+	{
+		return (size_t)((-(ptrdiff_t)condition) & (ptrdiff_t)value);
+	}
+
 	template <typename T, typename U = T>
 	MPMALLOC_INLINE_ALWAYS static void non_atomic_store(std::atomic<T>& where, U&& value)
 	{
@@ -537,6 +542,7 @@ namespace mpmalloc
 			return r.QuadPart;
 #endif
 		}
+
 		MPMALLOC_INLINE_ALWAYS static uint_fast64_t ticks_to_ns(uint_fast64_t ticks)
 		{
 #ifdef MPMALLOC_WINDOWS
@@ -546,6 +552,34 @@ namespace mpmalloc
 			ticks /= r.QuadPart;
 #endif
 			return ticks;
+		}
+	}
+
+	namespace statistics
+	{
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> used_memory;
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> total_memory;
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> used_vas;
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> total_vas;
+
+		MPMALLOC_ATTR size_t MPMALLOC_CALL used_physical_memory()
+		{
+			return used_memory.load(std::memory_order_acquire);
+		}
+
+		MPMALLOC_ATTR size_t MPMALLOC_CALL total_physical_memory()
+		{
+			return total_memory.load(std::memory_order_acquire);
+		}
+
+		MPMALLOC_ATTR size_t MPMALLOC_CALL used_address_space()
+		{
+			return used_vas.load(std::memory_order_acquire);
+		}
+
+		MPMALLOC_ATTR size_t MPMALLOC_CALL total_address_space()
+		{
+			return total_vas.load(std::memory_order_acquire);
 		}
 	}
 
@@ -795,34 +829,6 @@ namespace mpmalloc
 	};
 #endif
 
-	namespace statistics
-	{
-		static std::atomic<size_t> used_memory;
-		static std::atomic<size_t> total_memory;
-		static std::atomic<size_t> used_vas;
-		static std::atomic<size_t> total_vas;
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL used_physical_memory()
-		{
-			return used_memory.load(std::memory_order_acquire);
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL total_physical_memory()
-		{
-			return total_memory.load(std::memory_order_acquire);
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL used_address_space()
-		{
-			return used_vas.load(std::memory_order_acquire);
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL total_address_space()
-		{
-			return total_vas.load(std::memory_order_acquire);
-		}
-	}
-
 	namespace large_cache
 	{
 		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size)
@@ -859,7 +865,10 @@ namespace mpmalloc
 		{
 			void* r = try_allocate(size);
 			MPMALLOC_UNLIKELY_IF(r == nullptr)
+			{
 				r = backend::allocate_chunk_aligned(MPMALLOC_ALIGN_ROUND(size, params::chunk_size));
+				(void)statistics::used_vas.fetch_add(optional(r != nullptr, size), std::memory_order_relaxed);
+			}
 			return r;
 		}
 
