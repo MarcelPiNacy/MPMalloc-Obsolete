@@ -258,7 +258,7 @@ namespace mpmalloc
 			2304, 2560, 2816, 3072, 3328, 3584, 3840, 4096 //Q=256
 		};
 
-#ifdef MPMALLOC_64BIT
+#ifdef MPMALLOC_32BIT
 		using mask_type = uint32_t;
 #else
 		using mask_type = uint64_t;
