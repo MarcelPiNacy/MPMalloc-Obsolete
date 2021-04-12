@@ -150,14 +150,10 @@ namespace mpmalloc
 #ifdef _MSVC_LANG
 #define MPMALLOC_LIKELY_IF(CONDITION) if ((CONDITION))
 #define MPMALLOC_UNLIKELY_IF(CONDITION) if ((CONDITION))
-#define MPMALLOC_ROL64(MASK, COUNT)  ((uint8_t)_rotl64((MASK), (COUNT)))
-#define MPMALLOC_POPCOUNT8(MASK)  ((uint8_t)__popcnt16((MASK)))
-#define MPMALLOC_POPCOUNT16(MASK) ((uint8_t)__popcnt16((MASK)))
-#define MPMALLOC_POPCOUNT32(MASK) ((uint8_t)__popcnt((MASK)))
 #ifdef MPMALLOC_32BIT
-#define MPMALLOC_POPCOUNT64(MASK) (MPMALLOC_POPCOUNT32((uint32_t)((MASK))) + MPMALLOC_POPCOUNT32((uint32_t)((MASK) >> 32)))
+#define MPMALLOC_POPCOUNT(MASK) ((uint_fast8_t)__popcnt((MASK)))
 #else
-#define MPMALLOC_POPCOUNT64(MASK) ((uint8_t)__popcnt64((MASK)))
+#define MPMALLOC_POPCOUNT(MASK) ((uint_fast8_t)__popcnt64((MASK)))
 #endif
 #define MPMALLOC_INLINE_ALWAYS __forceinline
 #define MPMALLOC_INLINE_NEVER __declspec(noinline)
@@ -181,14 +177,14 @@ namespace mpmalloc
 	template <typename T, typename U = T>
 	MPMALLOC_INLINE_ALWAYS void non_atomic_store(std::atomic<T>& where, U&& value)
 	{
-		static_assert(where.is_always_lock_free);
-		*(T*)&where = value;
+		static_assert(std::atomic<T>::is_always_lock_free);
+		new ((T*)&where) T(std::forward<U>(value));
 	}
 
 	template <typename T>
 	MPMALLOC_INLINE_ALWAYS T non_atomic_load(const std::atomic<T>& from)
 	{
-		static_assert(from.is_always_lock_free);
+		static_assert(std::atomic<T>::is_always_lock_free);
 		return *(const T*)&from;
 	}
 
@@ -210,83 +206,43 @@ namespace mpmalloc
 		mask &= (T)~((T)1 << index);
 	}
 
-	MPMALLOC_INLINE_ALWAYS uint8_t find_first_set(uint32_t mask)
+	MPMALLOC_INLINE_ALWAYS uint_fast8_t find_first_set(size_t mask)
 	{
 		MPMALLOC_INVARIANT(mask != 0);
 		unsigned long r;
-		(void)BitScanForward(&r, mask);
-		return (uint8_t)r;
-	}
-
-	MPMALLOC_INLINE_ALWAYS uint8_t find_first_set(uint64_t mask)
-	{
-		MPMALLOC_INVARIANT(mask != 0);
-		unsigned long r;
+#ifdef MPMALLOC_64BIT
 		(void)BitScanForward64(&r, mask);
-		return (uint8_t)r;
+#else
+		(void)BitScanForward(&r, mask);
+#endif
+		return (uint_fast8_t)r;
 	}
 
-	MPMALLOC_INLINE_ALWAYS uint8_t find_last_set(uint32_t mask)
+	MPMALLOC_INLINE_ALWAYS uint_fast8_t find_last_set(size_t mask)
 	{
 		MPMALLOC_INVARIANT(mask != 0);
 		unsigned long r;
-		(void)BitScanReverse(&r, mask);
-		return (uint8_t)r;
-	}
-
-	MPMALLOC_INLINE_ALWAYS uint8_t find_last_set(uint64_t mask)
-	{
-		MPMALLOC_INVARIANT(mask != 0);
-		unsigned long r;
+#ifdef MPMALLOC_64BIT
 		(void)BitScanReverse64(&r, mask);
-		return (uint8_t)r;
+#else
+		(void)BitScanReverse(&r, mask);
+#endif
+		return (uint_fast8_t)r;
 	}
-
-	MPMALLOC_INLINE_ALWAYS uint8_t floor_log2(uint32_t value)
+	
+	MPMALLOC_INLINE_ALWAYS uint_fast8_t floor_log2(size_t value)
 	{
 		return find_last_set(value);
 	}
 
-	MPMALLOC_INLINE_ALWAYS uint8_t floor_log2(uint64_t value)
+	MPMALLOC_INLINE_ALWAYS size_t round_pow2(size_t value)
 	{
-		return find_last_set(value);
-	}
-
-	MPMALLOC_INLINE_ALWAYS uint32_t round_pow2(uint32_t value)
-	{
-		return 1UI32 << (floor_log2(value) + 1);
-	}
-
-	MPMALLOC_INLINE_ALWAYS uint64_t round_pow2(uint64_t value)
-	{
-		return 1UI64 << (floor_log2(value) + 1);
-	}
-
-	// Chris Wellons hash32 & hash64 https://nullprogram.com/blog/2018/07/31/
-
-	MPMALLOC_INLINE_ALWAYS uint32_t wellons_hash(uint32_t value)
-	{
-		value ^= value >> 16;
-		value *= 0x45d9f3bUI32;
-		value ^= value >> 16;
-		value *= 0x45d9f3bUI32;
-		value ^= value >> 16;
-		return value;
-	}
-
-	MPMALLOC_INLINE_ALWAYS uint64_t wellons_hash(uint64_t value)
-	{
-		value ^= value >> 32;
-		value *= 0xd6e8feb86659fd93UI64;
-		value ^= value >> 32;
-		value *= 0xd6e8feb86659fd93UI64;
-		value ^= value >> 32;
-		return value;
+		return (size_t)1 << (floor_log2(value) + 1);
 	}
 
 	namespace params
 	{
-		static constexpr uint32_t SMALL_SIZE_CLASSES[] =
+		static constexpr uint_fast16_t SMALL_SIZE_CLASSES[] =
 		{
 			1, 2, //Q=1
 			4, 8, 12, 16, // Q=4
@@ -298,9 +254,13 @@ namespace mpmalloc
 			2304, 2560, 2816, 3072, 3328, 3584, 3840, 4096 //Q=256
 		};
 
+		using mask_type = std::conditional_t<sizeof(size_t) == 4, uint32_t, uint64_t>;
+		static constexpr uint8_t BLOCK_MASK_BIT_SIZE_LOG2 = sizeof(mask_type) == 4 ? 5 : 6;
+		static constexpr uint8_t BLOCK_MASK_MOD_MASK = (1UI8 << BLOCK_MASK_BIT_SIZE_LOG2) - 1UI8;
+
 		static constexpr size_t SIZE_CLASS_COUNT = sizeof(SMALL_SIZE_CLASSES) / sizeof(SMALL_SIZE_CLASSES[0]);
 		static constexpr size_t BLOCK_ALLOCATOR_MAX_CAPACITY = std::hardware_constructive_interference_size * 8;
-		static constexpr size_t BLOCK_ALLOCATOR_MASK_COUNT = BLOCK_ALLOCATOR_MAX_CAPACITY / 64;
+		static constexpr size_t BLOCK_ALLOCATOR_MASK_COUNT = BLOCK_ALLOCATOR_MAX_CAPACITY / (4 * sizeof(mask_type));
 
 		static void* min_chunk;
 		static void* max_address;
@@ -427,12 +387,12 @@ namespace mpmalloc
 			(void)VirtualProtect(ptr, size, PAGE_READWRITE, &old);
 		}
 
-		MPMALLOC_INLINE_ALWAYS static uint32_t this_thread_id()
+		MPMALLOC_INLINE_ALWAYS static uint_fast32_t this_thread_id()
 		{
 			return GetCurrentThreadId();
 		}
 
-		MPMALLOC_INLINE_ALWAYS static uint32_t this_processor_index()
+		MPMALLOC_INLINE_ALWAYS static uint_fast32_t this_processor_index()
 		{
 			PROCESSOR_NUMBER pn;
 			GetCurrentProcessorNumberEx(&pn);
@@ -537,7 +497,7 @@ namespace mpmalloc
 #ifdef MPMALLOC_WINDOWS
 		using ticks_type = uint64_t;
 #endif
-		MPMALLOC_INLINE_ALWAYS static ticks_type now()
+		MPMALLOC_INLINE_ALWAYS static uint_fast64_t now()
 		{
 #ifdef MPMALLOC_WINDOWS
 			LARGE_INTEGER r;
@@ -545,7 +505,7 @@ namespace mpmalloc
 			return r.QuadPart;
 #endif
 		}
-		MPMALLOC_INLINE_ALWAYS static ticks_type ticks_to_ns(ticks_type ticks)
+		MPMALLOC_INLINE_ALWAYS static uint_fast64_t ticks_to_ns(uint_fast64_t ticks)
 		{
 #ifdef MPMALLOC_WINDOWS
 			LARGE_INTEGER r;
@@ -722,6 +682,7 @@ namespace mpmalloc
 		}
 	};
 
+#ifdef MPMALLOC_64BIT
 	template <typename T>
 	struct chunk_radix_tree
 	{
@@ -734,19 +695,19 @@ namespace mpmalloc
 		std::atomic<std::atomic<T*>*> roots[params::CHUNK_RADIX_TREE_ROOT_SIZE];
 		std::atomic<uint32_t> leaf_ref_counts[REFC_COUNT];
 
-		MPMALLOC_INLINE_ALWAYS static void break_key(size_t key, uint32_t& root_index, uint32_t& branch_index, uint32_t& leaf_index)
+		MPMALLOC_INLINE_ALWAYS static void break_key(size_t key, uint_fast32_t& root_index, uint_fast32_t& branch_index, uint_fast32_t& leaf_index)
 		{
 			key >>= params::chunk_size_log2;
 			leaf_index = key & params::chunk_radix_tree_leaf_mask;
 			key >>= params::chunk_radix_tree_leaf_size_log2;
 			branch_index = key & params::chunk_radix_tree_branch_mask;
 			key >>= params::chunk_radix_tree_branch_size_log2;
-			root_index = (uint32_t)key;
+			root_index = (uint_fast32_t)key;
 		}
 
 		MPMALLOC_INLINE_ALWAYS T* find_or_insert(size_t key)
 		{
-			uint32_t root_index, branch_index, leaf_index;
+			uint_fast32_t root_index, branch_index, leaf_index;
 			break_key(key, root_index, branch_index, leaf_index);
 			std::atomic<std::atomic<T*>*>& root = roots[root_index];
 			std::atomic<T*>* branch = root.load(std::memory_order_acquire);
@@ -783,7 +744,7 @@ namespace mpmalloc
 
 		MPMALLOC_INLINE_ALWAYS T* find(size_t key)
 		{
-			uint32_t root_index, branch_index, leaf_index;
+			uint_fast32_t root_index, branch_index, leaf_index;
 			break_key(key, root_index, branch_index, leaf_index);
 			std::atomic<T*>* branch = roots[root_index].load(std::memory_order_acquire);
 			MPMALLOC_UNLIKELY_IF(branch == nullptr)
@@ -797,7 +758,7 @@ namespace mpmalloc
 		template <typename F>
 		MPMALLOC_INLINE_ALWAYS void erase(size_t key, F&& destructor)
 		{
-			uint32_t root_index, branch_index, leaf_index;
+			uint_fast32_t root_index, branch_index, leaf_index;
 			break_key(key, root_index, branch_index, leaf_index);
 			std::atomic<T*>* branch = roots[root_index].load(std::memory_order_acquire);
 			MPMALLOC_INVARIANT(branch != nullptr);
@@ -806,6 +767,7 @@ namespace mpmalloc
 			destructor(leaf[leaf_index]);
 		}
 	};
+#endif
 
 
 
@@ -935,9 +897,9 @@ namespace mpmalloc
 			std::atomic<uint32_t> begin_free_mask;
 			std::atomic<uint32_t> free_count;
 			std::atomic_bool unlinked;
-			MPMALLOC_SHARED_ATTR std::atomic<uint64_t> free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
+			MPMALLOC_SHARED_ATTR std::atomic<params::mask_type> free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
 
-			MPMALLOC_INLINE_ALWAYS void init(uint8_t block_size_log2, shared_block_allocator_recover_list* recovered, uint8_t* buffer)
+			MPMALLOC_INLINE_ALWAYS void init(uint_fast8_t block_size_log2, shared_block_allocator_recover_list* recovered, uint8_t* buffer)
 			{
 				this->next = nullptr;
 				this->recovered = recovered;
@@ -947,40 +909,40 @@ namespace mpmalloc
 				this->block_size_log2 = block_size_log2;
 				non_atomic_store(unlinked, false);
 				(void)memset(free_map, 0, sizeof(free_map));
-				uint32_t mask_count = capacity >> 6;
-				uint32_t bit_count = capacity & 63;
+				uint_fast32_t mask_count = capacity >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				uint_fast32_t bit_count = capacity & params::BLOCK_MASK_MOD_MASK;
 				MPMALLOC_LIKELY_IF(mask_count != 0)
-					(void)memset(free_map, 0xff, mask_count * sizeof(uint64_t));
+					(void)memset(free_map, 0xff, mask_count * sizeof(params::mask_type));
 				MPMALLOC_LIKELY_IF(bit_count != 0)
-					non_atomic_store(free_map[mask_count], (1UI64 << bit_count) - 1UI64);
+					non_atomic_store(free_map[mask_count], ((params::mask_type)1 << bit_count) - (params::mask_type)1);
 			}
 
-			MPMALLOC_INLINE_ALWAYS uint32_t index_of(void* ptr) const
+			MPMALLOC_INLINE_ALWAYS uint_fast32_t index_of(void* ptr) const
 			{
-				return ((uint32_t)((uint8_t*)ptr - buffer)) >> block_size_log2;
+				return ((uint_fast32_t)((uint8_t*)ptr - buffer)) >> block_size_log2;
 			}
 
 			MPMALLOC_INLINE_ALWAYS void* allocate()
 			{
 				while (true)
 				{
-					for (uint32_t i = 0; i != params::BLOCK_ALLOCATOR_MASK_COUNT; ++i)
+					for (uint_fast32_t i = 0; i != params::BLOCK_ALLOCATOR_MASK_COUNT; ++i)
 					{
 						MPMALLOC_UNLIKELY_IF(free_count.load(std::memory_order_acquire) == 0)
 							return nullptr;
 
 						for (;; MPMALLOC_SPIN_WAIT)
 						{
-							uint64_t prior = free_map[i].load(std::memory_order_acquire);
+							params::mask_type prior = free_map[i].load(std::memory_order_acquire);
 							MPMALLOC_UNLIKELY_IF(prior == 0)
 								break;
-							uint8_t j = find_first_set(prior);
-							uint64_t desired = prior;
+							uint_fast8_t j = find_first_set(prior);
+							params::mask_type desired = prior;
 							bit_reset(desired, j);
 							MPMALLOC_LIKELY_IF(free_map[i].compare_exchange_weak(prior, desired, std::memory_order_acquire, std::memory_order_relaxed))
 							{
 								(void)free_count.fetch_sub(1, std::memory_order_release);
-								return buffer + (((i << 6) | j) << block_size_log2);
+								return buffer + (((i << params::BLOCK_MASK_BIT_SIZE_LOG2) | j) << block_size_log2);
 							}
 						}
 					}
@@ -996,10 +958,10 @@ namespace mpmalloc
 
 			MPMALLOC_INLINE_ALWAYS void deallocate(void* ptr)
 			{
-				uint32_t index = index_of(ptr);
-				uint32_t mask_index = index >> 6;
-				uint8_t bit_index = index & 63;
-				(void)free_map[mask_index].fetch_or(1UI64 << bit_index, std::memory_order_release);
+				uint_fast32_t index = index_of(ptr);
+				uint_fast32_t mask_index = index >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				uint_fast8_t bit_index = index & params::BLOCK_MASK_MOD_MASK;
+				(void)free_map[mask_index].fetch_or((params::mask_type)1 << bit_index, std::memory_order_release);
 				(void)free_count.fetch_add(1, std::memory_order_relaxed);
 				MPMALLOC_UNLIKELY_IF(unlinked.load(std::memory_order_acquire))
 					recover();
@@ -1009,11 +971,11 @@ namespace mpmalloc
 			{
 				MPMALLOC_UNLIKELY_IF((uint8_t*)ptr < buffer)
 					return false;
-				MPMALLOC_UNLIKELY_IF((uint8_t*)ptr >= buffer + ((size_t)params::BLOCK_ALLOCATOR_MAX_CAPACITY << block_size_log2))
+				MPMALLOC_UNLIKELY_IF((uint8_t*)ptr >= buffer + ((params::mask_type)params::BLOCK_ALLOCATOR_MAX_CAPACITY << block_size_log2))
 					return false;
-				uint32_t index = index_of(ptr);
-				uint32_t mask_index = index >> 6;
-				uint8_t bit_index = index & 63;
+				uint_fast32_t index = index_of(ptr);
+				uint_fast32_t mask_index = index >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				uint_fast8_t bit_index = index & params::BLOCK_MASK_MOD_MASK;
 				return bit_test(free_map[mask_index].load(std::memory_order_acquire), bit_index);
 			}
 		};
@@ -1022,7 +984,7 @@ namespace mpmalloc
 		{
 			std::atomic<shared_block_allocator*> head;
 
-			shared_block_allocator* peek() const
+			MPMALLOC_INLINE_ALWAYS shared_block_allocator* peek() const
 			{
 				return head.load(std::memory_order_acquire);
 			}
@@ -1085,7 +1047,7 @@ namespace mpmalloc
 #endif
 		}
 
-		static void* try_allocate_impl(uint8_t sc)
+		static void* try_allocate_impl(uint_fast8_t sc)
 		{
 			shared_block_allocator* allocator;
 			while (true)
@@ -1110,14 +1072,14 @@ namespace mpmalloc
 
 		void* try_allocate(size_t size)
 		{
-			uint8_t sc = floor_log2(size) - params::page_size_log2;
+			uint_fast8_t sc = floor_log2(size) - params::page_size_log2;
 			return try_allocate_impl(sc);
 		}
 
 		void* allocate(size_t size)
 		{
-			uint8_t size_log2 = floor_log2(size);
-			uint8_t sc = floor_log2(size) - params::page_size_log2;
+			uint_fast8_t size_log2 = floor_log2(size);
+			uint_fast8_t sc = floor_log2(size) - params::page_size_log2;
 			void* r = try_allocate_impl(sc);
 			MPMALLOC_LIKELY_IF(r != nullptr)
 				return r;
@@ -1174,66 +1136,66 @@ namespace mpmalloc
 			uint32_t capacity;
 			std::atomic<os::thread_id> owning_thread;
 			std::atomic_bool unlinked;
-			MPMALLOC_SHARED_ATTR uint64_t free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
-			MPMALLOC_SHARED_ATTR std::atomic<uint64_t> marked_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
+			MPMALLOC_SHARED_ATTR params::mask_type free_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
+			MPMALLOC_SHARED_ATTR std::atomic<params::mask_type> marked_map[params::BLOCK_ALLOCATOR_MASK_COUNT];
 
-			MPMALLOC_INLINE_ALWAYS void init(uint32_t block_size, size_t chunk_size, recovered_list* recovered)
+			MPMALLOC_INLINE_ALWAYS void init(uint_fast32_t block_size, size_t chunk_size, recovered_list* recovered)
 			{
 				this->next = nullptr;
 				this->recovered = recovered;
-				capacity = (uint32_t)(chunk_size / block_size);
-				uint32_t reserved_count = (uint32_t)MPMALLOC_ALIGN_ROUND(sizeof(intrusive_block_allocator), (size_t)block_size) / block_size;
+				capacity = (uint_fast32_t)(chunk_size / block_size);
+				uint_fast32_t reserved_count = (uint_fast32_t)MPMALLOC_ALIGN_ROUND(sizeof(intrusive_block_allocator), (size_t)block_size) / block_size;
 				free_count = capacity - reserved_count;
 				begin_free_mask = 0;
 				this->block_size = block_size;
 				non_atomic_store(unlinked, false);
 				(void)memset(free_map, 0, sizeof(free_map));
 				(void)memset(marked_map, 0, sizeof(marked_map));
-				uint32_t mask_count = capacity >> 6;
-				uint32_t bit_count = capacity & 63;
+				uint_fast32_t mask_count = capacity >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				uint_fast32_t bit_count = capacity & params::BLOCK_MASK_MOD_MASK;
 				MPMALLOC_LIKELY_IF(mask_count != 0)
-					(void)memset(free_map, 0xff, mask_count * sizeof(uint64_t));
+					(void)memset(free_map, 0xff, mask_count * sizeof(params::mask_type));
 				MPMALLOC_LIKELY_IF(bit_count != 0)
 					free_map[mask_count] = (1UI64 << bit_count) - 1UI64;
-				mask_count = reserved_count >> 6;
-				bit_count = reserved_count & 63;
+				mask_count = reserved_count >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				bit_count = reserved_count & params::BLOCK_MASK_MOD_MASK;
 				MPMALLOC_LIKELY_IF(mask_count != 0)
-					(void)memset(free_map, 0, mask_count * sizeof(uint64_t));
+					(void)memset(free_map, 0, mask_count * sizeof(params::mask_type));
 				MPMALLOC_LIKELY_IF(bit_count != 0)
 					free_map[0] &= ~((1UI64 << bit_count) - 1UI64);
 			}
 
-			MPMALLOC_INLINE_NEVER uint32_t reclaim()
+			MPMALLOC_INLINE_NEVER uint_fast32_t reclaim()
 			{
-				uint32_t freed_count = 0;
-				for (uint32_t i = 0; i != params::BLOCK_ALLOCATOR_MASK_COUNT; ++i)
+				uint_fast32_t freed_count = 0;
+				for (uint_fast32_t i = 0; i != params::BLOCK_ALLOCATOR_MASK_COUNT; ++i)
 				{
 					MPMALLOC_LIKELY_IF(marked_map[i].load(std::memory_order_acquire) != 0)
 					{
-						uint64_t mask = marked_map[i].exchange(0, std::memory_order_acquire);
+						params::mask_type mask = marked_map[i].exchange(0, std::memory_order_acquire);
 						free_map[i] |= mask;
-						freed_count += MPMALLOC_POPCOUNT64(mask);
+						freed_count += MPMALLOC_POPCOUNT(mask);
 					}
 				}
 				return freed_count;
 			}
 
-			MPMALLOC_INLINE_ALWAYS uint32_t index_of(void* ptr) const
+			MPMALLOC_INLINE_ALWAYS uint_fast32_t index_of(void* ptr) const
 			{
-				return ((uint32_t)((uint8_t*)ptr - (uint8_t*)this)) / block_size;
+				return ((uint_fast32_t)((uint8_t*)ptr - (uint8_t*)this)) / block_size;
 			}
 
 			MPMALLOC_INLINE_ALWAYS void* allocate()
 			{
-				for (uint32_t mask_index = begin_free_mask; mask_index != params::BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
+				for (uint_fast32_t mask_index = begin_free_mask; mask_index != params::BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
 				{
 					MPMALLOC_LIKELY_IF(free_map[mask_index] != 0)
 					{
 						MPMALLOC_LIKELY_IF(begin_free_mask < mask_index)
 							begin_free_mask = mask_index;
-						uint32_t bit_index = find_first_set(free_map[mask_index]);
+						uint_fast8_t bit_index = find_first_set(free_map[mask_index]);
 						bit_reset(free_map[mask_index], bit_index);
-						uint32_t offset = (mask_index << 6) | bit_index;
+						uint_fast32_t offset = (mask_index << params::BLOCK_MASK_BIT_SIZE_LOG2) | bit_index;
 						offset *= block_size;
 						--free_count;
 						MPMALLOC_UNLIKELY_IF(free_count == 0)
@@ -1267,9 +1229,9 @@ namespace mpmalloc
 			MPMALLOC_INLINE_ALWAYS void deallocate(void* ptr)
 			{
 				++free_count;
-				uint32_t index = index_of(ptr);
-				uint32_t mask_index = index >> 6;
-				uint32_t bit_index = index & 63;
+				uint_fast32_t index = index_of(ptr);
+				uint_fast32_t mask_index = index >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				uint_fast32_t bit_index = index & params::BLOCK_MASK_MOD_MASK;
 				if (begin_free_mask < mask_index)
 					begin_free_mask = mask_index;
 				bit_set(free_map[mask_index], bit_index);
@@ -1279,9 +1241,9 @@ namespace mpmalloc
 
 			MPMALLOC_INLINE_ALWAYS void deallocate_shared(void* ptr)
 			{
-				uint32_t index = index_of(ptr);
-				uint32_t mask_index = index >> 6;
-				uint32_t bit_index = index & 63;
+				uint_fast32_t index = index_of(ptr);
+				uint_fast32_t mask_index = index >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				uint_fast32_t bit_index = index & params::BLOCK_MASK_MOD_MASK;
 				(void)marked_map[mask_index].fetch_or(1UI64 << bit_index, std::memory_order_release);
 				MPMALLOC_UNLIKELY_IF(unlinked.load(std::memory_order_acquire))
 					recover();
@@ -1293,14 +1255,13 @@ namespace mpmalloc
 					return false;
 				MPMALLOC_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)this + (size_t)params::BLOCK_ALLOCATOR_MAX_CAPACITY * block_size)
 					return false;
-				uint32_t index = index_of(ptr);
-				uint32_t mask_index = index >> 6;
-				uint32_t bit_index = index & 63;
+				uint_fast32_t index = index_of(ptr);
+				uint_fast32_t mask_index = index >> params::BLOCK_MASK_BIT_SIZE_LOG2;
+				uint_fast32_t bit_index = index & params::BLOCK_MASK_MOD_MASK;
 				return bit_test(free_map[mask_index], bit_index);
 			}
 
-			MPMALLOC_INLINE_ALWAYS
-				static intrusive_block_allocator* allocator_of(void* ptr, size_t chunk_size)
+			MPMALLOC_INLINE_ALWAYS static intrusive_block_allocator* allocator_of(void* ptr, size_t chunk_size)
 			{
 				size_t mask = (size_t)ptr;
 				mask = MPMALLOC_ALIGN_FLOOR(mask, chunk_size);
@@ -1323,9 +1284,9 @@ namespace mpmalloc
 
 		thread_local static thread_cache_state here;
 
-		uint8_t size_class_of(size_t size)
+		uint_fast8_t size_class_of(size_t size)
 		{
-			for (uint8_t i = 0; i != params::SIZE_CLASS_COUNT; ++i)
+			for (uint_fast8_t i = 0; i != params::SIZE_CLASS_COUNT; ++i)
 				MPMALLOC_UNLIKELY_IF(params::SMALL_SIZE_CLASSES[i] >= size)
 					return i;
 			MPMALLOC_UNREACHABLE;
@@ -1343,8 +1304,7 @@ namespace mpmalloc
 			return block_size_of_unsafe(size);
 		}
 
-		MPMALLOC_INLINE_NEVER
-			static void* allocate_fallback(uint8_t sc)
+		MPMALLOC_INLINE_NEVER static void* allocate_fallback(uint_fast8_t sc)
 		{
 			cache_aligned_recovered_list& e = here.small_recovered[sc];
 			intrusive_block_allocator* head = (intrusive_block_allocator*)e.list.pop_all();
@@ -1362,7 +1322,7 @@ namespace mpmalloc
 			return r;
 		}
 
-		void* try_allocate_impl(uint8_t sc)
+		void* try_allocate_impl(uint_fast8_t sc)
 		{
 			free_list& bin = here.small_bins[sc];
 			intrusive_block_allocator* head = (intrusive_block_allocator*)bin.peek();
@@ -1380,7 +1340,7 @@ namespace mpmalloc
 
 		void* try_allocate(size_t size)
 		{
-			uint8_t sc = size_class_of(size);
+			uint_fast8_t sc = size_class_of(size);
 			return try_allocate_impl(sc);
 		}
 
@@ -1388,7 +1348,7 @@ namespace mpmalloc
 		{
 			MPMALLOC_UNLIKELY_IF(size == 0)
 				return nullptr;
-			uint8_t sc = size_class_of(size);
+			uint_fast8_t sc = size_class_of(size);
 			void* r = try_allocate_impl(sc);
 			MPMALLOC_UNLIKELY_IF(r != nullptr)
 				return r;
@@ -1397,7 +1357,7 @@ namespace mpmalloc
 			intrusive_block_allocator* allocator = (intrusive_block_allocator*)mpmalloc::allocate(chunk_size);
 			MPMALLOC_UNLIKELY_IF(allocator == nullptr)
 				return nullptr;
-			allocator->init((uint32_t)size, chunk_size, &(here.small_recovered[sc].list));
+			allocator->init((uint_fast32_t)size, chunk_size, &(here.small_recovered[sc].list));
 			non_atomic_store(allocator->owning_thread, os::this_thread_id());
 			MPMALLOC_INVARIANT(allocator->free_count != 0);
 			r = allocator->allocate();
@@ -1411,7 +1371,7 @@ namespace mpmalloc
 #ifndef MPMALLOC_NO_ZERO_SIZE_CHECK
 			size |= (size == 0);
 #endif
-			uint8_t sc = size_class_of(size);
+			uint_fast8_t sc = size_class_of(size);
 			recovered_list* expected_recovered_list = &(here.small_recovered[sc].list);
 			intrusive_block_allocator* allocator = intrusive_block_allocator::allocator_of(ptr, chunk_size_of(size));
 			if (allocator->recovered == expected_recovered_list)
