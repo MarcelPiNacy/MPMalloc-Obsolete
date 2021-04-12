@@ -15,19 +15,31 @@
 #define MPMALLOC_INCLUDED
 #include <cstdint>
 
+#ifndef MPMALLOC_CALL
+#define MPMALLOC_CALL
+#endif
+
+#ifndef MPMALLOC_ATTR
+#define MPMALLOC_ATTR
+#endif
+
+#ifndef MPMALLOC_PTR
+#define MPMALLOC_PTR
+#endif
+
 
 
 namespace mpmalloc
 {
 	namespace fn_ptr
 	{
-		using init = void(*)();
-		using finalize = void(*)();
-		using allocate = void* (*)(size_t);
-		using allocate_chunk_aligned = void* (*)(size_t);
-		using try_expand = bool (*)(void*, size_t, size_t);
-		using reallocate = void* (*)(void*, size_t, size_t);
-		using deallocate = void (*)(void*, size_t);
+		using init = void(MPMALLOC_PTR*)();
+		using finalize = void(MPMALLOC_PTR*)();
+		using allocate = void* (MPMALLOC_PTR*)(size_t);
+		using allocate_chunk_aligned = void* (MPMALLOC_PTR*)(size_t);
+		using try_expand = bool (MPMALLOC_PTR*)(void*, size_t, size_t);
+		using reallocate = void* (MPMALLOC_PTR*)(void*, size_t, size_t);
+		using deallocate = void (MPMALLOC_PTR*)(void*, size_t);
 		using purge = deallocate;
 		using protect_readwrite = deallocate;
 		using protect_readonly = deallocate;
@@ -64,67 +76,67 @@ namespace mpmalloc
 		const backend_options* backend;
 	};
 
-	void init(const init_options* options = nullptr);
-	void finalize();
-	void init_thread();
-	void finalize_thread();
+	MPMALLOC_ATTR void MPMALLOC_CALL init(const init_options* options = nullptr);
+	MPMALLOC_ATTR void MPMALLOC_CALL finalize();
+	MPMALLOC_ATTR void MPMALLOC_CALL init_thread();
+	MPMALLOC_ATTR void MPMALLOC_CALL finalize_thread();
 
 	[[nodiscard]]
-	void* allocate(size_t size);
-	bool try_expand(void* ptr, size_t old_size, size_t new_size);
+	MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+	MPMALLOC_ATTR bool MPMALLOC_CALL try_expand(void* ptr, size_t old_size, size_t new_size);
 	[[nodiscard]]
-	void* reallocate(void* ptr, size_t old_size, size_t new_size);
-	void deallocate(void* ptr, size_t size);
-	size_t block_size_of(size_t size);
-	size_t trim();
-	size_t purge();
+	MPMALLOC_ATTR void* MPMALLOC_CALL reallocate(void* ptr, size_t old_size, size_t new_size);
+	MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
+	MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
+	MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
+	MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
 
-	backend_options default_backend();
-	backend_options current_backend();
-	platform_information platform_info();
+	MPMALLOC_ATTR backend_options MPMALLOC_CALL default_backend();
+	MPMALLOC_ATTR backend_options MPMALLOC_CALL current_backend();
+	MPMALLOC_ATTR platform_information MPMALLOC_CALL platform_info();
 
 	namespace statistics
 	{
-		size_t used_physical_memory();
-		size_t total_physical_memory();
-		size_t used_address_space();
-		size_t total_address_space();
+		MPMALLOC_ATTR size_t MPMALLOC_CALL used_physical_memory();
+		MPMALLOC_ATTR size_t MPMALLOC_CALL total_physical_memory();
+		MPMALLOC_ATTR size_t MPMALLOC_CALL used_address_space();
+		MPMALLOC_ATTR size_t MPMALLOC_CALL total_address_space();
 	}
 
 	namespace large_cache
 	{
 		[[nodiscard]]
-		void* try_allocate(size_t size);
+		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
 		[[nodiscard]]
-		void* allocate(size_t size);
-		void deallocate(void* ptr, size_t size);
-		size_t block_size_of(size_t size);
-		size_t trim();
-		size_t purge();
+		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
+		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
+		MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
+		MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
 	}
 
 	namespace shared_cache
 	{
 		[[nodiscard]]
-		void* try_allocate(size_t size);
+		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
 		[[nodiscard]]
-		void* allocate(size_t size);
-		void deallocate(void* ptr, size_t size);
-		size_t block_size_of(size_t size);
-		size_t trim();
-		size_t purge();
+		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
+		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
+		MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
+		MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
 	}
 
 	namespace thread_cache
 	{
 		[[nodiscard]]
-		void* try_allocate(size_t size);
+		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
 		[[nodiscard]]
-		void* allocate(size_t size);
-		void deallocate(void* ptr, size_t size);
-		size_t block_size_of(size_t size);
-		size_t trim();
-		size_t purge();
+		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
+		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
+		MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
+		MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
 	}
 }
 #endif
@@ -702,14 +714,7 @@ namespace mpmalloc
 	template <typename T>
 	struct chunk_radix_tree
 	{
-		using tagged_ptr = size_t;
-
-		static constexpr uint8_t REFC_COUNT_LOG2 = 8;
-		static constexpr uint32_t REFC_COUNT = 1UI32 << REFC_COUNT_LOG2;
-		static constexpr uint32_t REFC_MASK = REFC_COUNT - 1;
-
 		std::atomic<std::atomic<T*>*> roots[params::CHUNK_RADIX_TREE_ROOT_SIZE];
-		std::atomic<uint32_t> leaf_ref_counts[REFC_COUNT];
 
 		MPMALLOC_INLINE_ALWAYS static void break_key(size_t key, uint_fast32_t& root_index, uint_fast32_t& branch_index, uint_fast32_t& leaf_index)
 		{
@@ -797,22 +802,22 @@ namespace mpmalloc
 		static std::atomic<size_t> used_vas;
 		static std::atomic<size_t> total_vas;
 
-		size_t used_physical_memory()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL used_physical_memory()
 		{
 			return used_memory.load(std::memory_order_acquire);
 		}
 
-		size_t total_physical_memory()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL total_physical_memory()
 		{
 			return total_memory.load(std::memory_order_acquire);
 		}
 
-		size_t used_address_space()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL used_address_space()
 		{
 			return used_vas.load(std::memory_order_acquire);
 		}
 
-		size_t total_address_space()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL total_address_space()
 		{
 			return total_vas.load(std::memory_order_acquire);
 		}
@@ -820,7 +825,7 @@ namespace mpmalloc
 
 	namespace large_cache
 	{
-		size_t block_size_of(size_t size)
+		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size)
 		{
 			size_t r = MPMALLOC_ALIGN_ROUND(size, params::chunk_size);
 			MPMALLOC_UNLIKELY_IF(r < params::chunk_size)
@@ -831,26 +836,26 @@ namespace mpmalloc
 #ifndef MPMALLOC_64BIT
 		static shared_chunk_list* bins;
 
-		void init()
+		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
 			size_t buffer_size = sizeof(shared_chunk_list) << (32 - params::chunk_size_log2);
 			bins = (shared_chunk_list*)backend::allocate_chunk_aligned(buffer_size);
 		}
 
-		void finalize()
+		MPMALLOC_ATTR void MPMALLOC_CALL finalize()
 		{
 			size_t buffer_size = sizeof(shared_chunk_list) << (32 - params::chunk_size_log2);
 			backend::deallocate(bins, buffer_size);
 		}
 
-		void* try_allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size)
 		{
 			size >>= params::chunk_size_log2;
 			--size;
 			return bins[size].pop();
 		}
 
-		void* allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size)
 		{
 			void* r = try_allocate(size);
 			MPMALLOC_UNLIKELY_IF(r == nullptr)
@@ -858,19 +863,19 @@ namespace mpmalloc
 			return r;
 		}
 
-		void deallocate(void* ptr, size_t size)
+		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size)
 		{
 			size >>= params::chunk_size_log2;
 			--size;
 			bins[size].push(ptr);
 		}
 
-		size_t trim()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
 		{
 			return 0;
 		}
 
-		size_t purge()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
 		{
 			return 0;
 		}
@@ -881,15 +886,15 @@ namespace mpmalloc
 		static constexpr size_t SHARD_MASK = 255;
 		static chunk_radix_tree<shared_chunk_list> lookup;
 
-		void init()
+		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
 		}
 
-		void finalize()
+		MPMALLOC_ATTR void MPMALLOC_CALL finalize()
 		{
 		}
 
-		void* try_allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size)
 		{
 			size >>= params::chunk_size_log2;
 			--size;
@@ -901,7 +906,7 @@ namespace mpmalloc
 			return bin->pop();
 		}
 
-		void* allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size)
 		{
 			void* r = try_allocate(size);
 			MPMALLOC_UNLIKELY_IF(r == nullptr)
@@ -909,7 +914,7 @@ namespace mpmalloc
 			return r;
 		}
 
-		void deallocate(void* ptr, size_t size)
+		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size)
 		{
 			size >>= params::chunk_size_log2;
 			--size;
@@ -918,13 +923,13 @@ namespace mpmalloc
 			lookup.find_or_insert(size)->push(ptr);
 		}
 
-		size_t trim()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
 		{
 			size_t r = 0;
 			return r;
 		}
 
-		size_t purge()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
 		{
 			size_t r = 0;
 			return r;
@@ -1062,10 +1067,10 @@ namespace mpmalloc
 		static chunk_radix_tree<shared_block_allocator> lookup;
 #endif
 
-		shared_allocator_list* bins;
-		shared_block_allocator_recover_list* recovered;
+		static shared_allocator_list* bins;
+		static shared_block_allocator_recover_list* recovered;
 
-		void init()
+		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
 			size_class_count = params::chunk_size_log2 - params::page_size_log2;
 			size_t buffer_size = 0;
@@ -1085,7 +1090,7 @@ namespace mpmalloc
 			recovered = (shared_block_allocator_recover_list*)buffer;
 		}
 
-		void finalize()
+		MPMALLOC_ATTR void MPMALLOC_CALL finalize()
 		{
 #ifndef MPMALLOC_64BIT
 #else
@@ -1115,13 +1120,13 @@ namespace mpmalloc
 			return r;
 		}
 
-		void* try_allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size)
 		{
 			uint_fast8_t sc = floor_log2(size) - params::page_size_log2;
 			return try_allocate_impl(sc);
 		}
 
-		void* allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size)
 		{
 			uint_fast8_t size_log2 = floor_log2(size);
 			uint_fast8_t sc = floor_log2(size) - params::page_size_log2;
@@ -1142,7 +1147,7 @@ namespace mpmalloc
 			return r;
 		}
 
-		void deallocate(void* ptr, size_t size)
+		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size)
 		{
 #ifndef MPMALLOC_64BIT
 			lookup[(size_t)ptr >> params::chunk_size_log2].deallocate(ptr);
@@ -1151,18 +1156,18 @@ namespace mpmalloc
 #endif
 		}
 
-		size_t block_size_of(size_t size)
+		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size)
 		{
 			return round_pow2(size);
 		}
 
-		size_t trim()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
 		{
 			size_t r = 0;
 			return r;
 		}
 
-		size_t purge()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
 		{
 			size_t r = 0;
 			return r;
@@ -1324,7 +1329,7 @@ namespace mpmalloc
 
 		thread_local static thread_cache_state here;
 
-		uint_fast8_t size_class_of(size_t size)
+		MPMALLOC_INLINE_NEVER static uint_fast8_t size_class_of(size_t size)
 		{
 			for (uint_fast8_t i = 0; i != params::SIZE_CLASS_COUNT; ++i)
 				MPMALLOC_UNLIKELY_IF(params::SMALL_SIZE_CLASSES[i] >= size)
@@ -1332,12 +1337,12 @@ namespace mpmalloc
 			MPMALLOC_UNREACHABLE;
 		}
 
-		size_t block_size_of_unsafe(size_t size)
+		MPMALLOC_INLINE_NEVER static size_t block_size_of_unsafe(size_t size)
 		{
 			return params::SMALL_SIZE_CLASSES[size_class_of(size)];
 		}
 
-		size_t block_size_of(size_t size)
+		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size)
 		{
 			MPMALLOC_UNLIKELY_IF(size == 0 || size > params::page_size)
 				return 0;
@@ -1378,13 +1383,13 @@ namespace mpmalloc
 			return r;
 		}
 
-		void* try_allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size)
 		{
 			uint_fast8_t sc = size_class_of(size);
 			return try_allocate_impl(sc);
 		}
 
-		void* allocate(size_t size)
+		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size)
 		{
 			MPMALLOC_UNLIKELY_IF(size == 0)
 				return nullptr;
@@ -1406,7 +1411,7 @@ namespace mpmalloc
 			return r;
 		}
 
-		void deallocate(void* ptr, size_t size)
+		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size)
 		{
 #ifndef MPMALLOC_NO_ZERO_SIZE_CHECK
 			size |= (size == 0);
@@ -1420,28 +1425,30 @@ namespace mpmalloc
 				allocator->deallocate_shared(ptr);
 		}
 
-		void init()
+		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
 		}
 
-		void finalize()
+		MPMALLOC_ATTR void MPMALLOC_CALL finalize()
 		{
 		}
 
-		size_t trim()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
 		{
 			size_t r = 0;
+
 			return r;
 		}
 
-		size_t purge()
+		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
 		{
 			size_t r = 0;
+
 			return r;
 		}
 	}
 
-	void init(const init_options* options)
+	MPMALLOC_ATTR void MPMALLOC_CALL init(const init_options* options)
 	{
 		MPMALLOC_LIKELY_IF(options != nullptr && options->backend != nullptr)
 		{
@@ -1462,24 +1469,24 @@ namespace mpmalloc
 		shared_cache::init();
 	}
 
-	void finalize()
+	MPMALLOC_ATTR void MPMALLOC_CALL finalize()
 	{
 		shared_cache::finalize();
 		large_cache::finalize();
 		backend::init();
 	}
 
-	void init_thread()
+	MPMALLOC_ATTR void MPMALLOC_CALL init_thread()
 	{
 		thread_cache::init();
 	}
 
-	void finalize_thread()
+	MPMALLOC_ATTR void MPMALLOC_CALL finalize_thread()
 	{
 		thread_cache::finalize();
 	}
 
-	void* allocate(size_t size)
+	MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size)
 	{
 		MPMALLOC_UNLIKELY_IF(size == 0)
 			return nullptr;
@@ -1496,13 +1503,13 @@ namespace mpmalloc
 		return r;
 	}
 
-	bool try_expand(void* ptr, size_t old_size, size_t new_size)
+	MPMALLOC_ATTR bool MPMALLOC_CALL try_expand(void* ptr, size_t old_size, size_t new_size)
 	{
 		size_t rounded_old_size = block_size_of(old_size);
 		return rounded_old_size >= new_size;
 	}
 
-	void* reallocate(void* ptr, size_t old_size, size_t new_size)
+	MPMALLOC_ATTR void* MPMALLOC_CALL reallocate(void* ptr, size_t old_size, size_t new_size)
 	{
 		MPMALLOC_INVARIANT(ptr != nullptr || old_size == 0);
 		MPMALLOC_UNLIKELY_IF(try_expand(ptr, old_size, new_size))
@@ -1515,7 +1522,7 @@ namespace mpmalloc
 		return r;
 	}
 
-	void deallocate(void* ptr, size_t size)
+	MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size)
 	{
 		MPMALLOC_UNLIKELY_IF(ptr == nullptr)
 			return;
@@ -1527,7 +1534,7 @@ namespace mpmalloc
 			return large_cache::deallocate(ptr, size);
 	}
 
-	size_t block_size_of(size_t size)
+	MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size)
 	{
 		MPMALLOC_LIKELY_IF(size <= params::page_size)
 			return thread_cache::block_size_of(size);
@@ -1537,7 +1544,7 @@ namespace mpmalloc
 			return large_cache::block_size_of(size);
 	}
 
-	size_t trim()
+	MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
 	{
 		size_t r = 0;
 		r += thread_cache::trim();
@@ -1546,7 +1553,7 @@ namespace mpmalloc
 		return r;
 	}
 
-	size_t purge()
+	MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
 	{
 		size_t r = 0;
 		r += thread_cache::purge();
@@ -1555,7 +1562,7 @@ namespace mpmalloc
 		return r;
 	}
 
-	backend_options default_backend()
+	MPMALLOC_ATTR backend_options MPMALLOC_CALL default_backend()
 	{
 		backend_options r;
 		r.init = os::init;
@@ -1570,10 +1577,10 @@ namespace mpmalloc
 		return r;
 	}
 
-	backend_options current_backend()
+	MPMALLOC_ATTR backend_options MPMALLOC_CALL current_backend()
 	{
 		backend_options r;
-		r.init =backend::init;
+		r.init = backend::init;
 		r.finalize = backend::finalize;
 		r.allocate = backend::allocate;
 		r.allocate_chunk_aligned = backend::allocate_chunk_aligned;
@@ -1585,7 +1592,7 @@ namespace mpmalloc
 		return r;
 	}
 
-	platform_information platform_info()
+	MPMALLOC_ATTR platform_information MPMALLOC_CALL platform_info()
 	{
 		platform_information r;
 		r.processor_count = params::processor_count;
