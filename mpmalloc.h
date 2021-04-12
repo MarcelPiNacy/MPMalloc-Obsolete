@@ -47,6 +47,18 @@ namespace mpmalloc
 		fn_ptr::protect_noaccess protect_noaccess;
 	};
 
+	struct platform_information
+	{
+		size_t processor_count;
+		size_t cache_line_size;
+		size_t page_size;
+		size_t large_page_size;
+		size_t chunk_size;
+		size_t address_space_granularity;
+		void* min_address;
+		void* max_address;
+	};
+
 	struct init_options
 	{
 		const backend_options* backend;
@@ -67,7 +79,9 @@ namespace mpmalloc
 	size_t trim();
 	size_t purge();
 
+	backend_options default_backend();
 	backend_options current_backend();
+	platform_information platform_info();
 
 	namespace statistics
 	{
@@ -271,12 +285,15 @@ namespace mpmalloc
 		static constexpr size_t BLOCK_ALLOCATOR_MASK_COUNT = BLOCK_ALLOCATOR_MAX_CAPACITY / (4 * sizeof(mask_type));
 
 		static void* min_chunk;
+		static void* min_address;
 		static void* max_address;
 		static size_t processor_count;
+		static size_t large_page_size;
 		static size_t page_size;
 		static size_t chunk_size;
 		static size_t chunk_size_mask;
 		static size_t small_cache_size;
+		static size_t vas_granularity;
 #ifdef MPMALLOC_64BIT
 		static constexpr uint8_t CHUNK_RADIX_TREE_ROOT_SIZE_LOG2 = 8;
 		static constexpr uint32_t CHUNK_RADIX_TREE_ROOT_SIZE = 1UI32 << CHUNK_RADIX_TREE_ROOT_SIZE_LOG2;
@@ -293,16 +310,19 @@ namespace mpmalloc
 
 		MPMALLOC_INLINE_ALWAYS static void init()
 		{
+			large_page_size = GetLargePageMinimum();
 			SYSTEM_INFO info;
 			GetSystemInfo(&info);
 			processor_count = info.dwNumberOfProcessors;
 			page_size = info.dwPageSize;
+			vas_granularity = info.dwAllocationGranularity;
 			MPMALLOC_INVARIANT(page_size <= params::SMALL_SIZE_CLASSES[params::SIZE_CLASS_COUNT - 1]);
 			chunk_size = info.dwPageSize * std::hardware_constructive_interference_size * 8;
 			chunk_size_mask = chunk_size - 1;
 			MPMALLOC_INVARIANT(params::chunk_size >= (32 * 4096));
 			page_size_log2 = floor_log2(page_size);
 			chunk_size_log2 = floor_log2(chunk_size);
+			min_address = info.lpMinimumApplicationAddress;
 			max_address = info.lpMaximumApplicationAddress;
 			min_chunk = (void*)MPMALLOC_ALIGN_ROUND((size_t)info.lpMinimumApplicationAddress, chunk_size);
 #ifdef MPMALLOC_64BIT
@@ -1535,6 +1555,21 @@ namespace mpmalloc
 		return r;
 	}
 
+	backend_options default_backend()
+	{
+		backend_options r;
+		r.init = os::init;
+		r.finalize = nullptr;
+		r.allocate = os::allocate;
+		r.allocate_chunk_aligned = os::allocate_chunk_aligned;
+		r.deallocate = os::deallocate;
+		r.purge = os::purge;
+		r.protect_readwrite = os::protect_readwrite;
+		r.protect_readonly = os::protect_readonly;
+		r.protect_noaccess = os::protect_noaccess;
+		return r;
+	}
+
 	backend_options current_backend()
 	{
 		backend_options r;
@@ -1550,5 +1585,18 @@ namespace mpmalloc
 		return r;
 	}
 
+	platform_information platform_info()
+	{
+		platform_information r;
+		r.processor_count = params::processor_count;
+		r.cache_line_size = std::hardware_constructive_interference_size;
+		r.page_size = params::page_size;
+		r.large_page_size = params::large_page_size;
+		r.chunk_size = params::chunk_size;
+		r.address_space_granularity = params::vas_granularity;
+		r.min_address = params::min_chunk;
+		r.max_address = params::max_address;
+		return r;
+	}
 }
 #endif
