@@ -14,6 +14,7 @@
 #ifndef MPMALLOC_INCLUDED
 #define MPMALLOC_INCLUDED
 #include <cstdint>
+#include <cstddef>
 
 #ifndef MPMALLOC_CALL
 #define MPMALLOC_CALL
@@ -81,11 +82,9 @@ namespace mpmalloc
 	MPMALLOC_ATTR void MPMALLOC_CALL init_thread();
 	MPMALLOC_ATTR void MPMALLOC_CALL finalize_thread();
 
-	[[nodiscard]]
-	MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+	[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
 	MPMALLOC_ATTR bool MPMALLOC_CALL try_expand(void* ptr, size_t old_size, size_t new_size);
-	[[nodiscard]]
-	MPMALLOC_ATTR void* MPMALLOC_CALL reallocate(void* ptr, size_t old_size, size_t new_size);
+	[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL reallocate(void* ptr, size_t old_size, size_t new_size);
 	MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
 	MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
 	MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
@@ -105,38 +104,28 @@ namespace mpmalloc
 
 	namespace large_cache
 	{
-		[[nodiscard]]
-		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
-		[[nodiscard]]
-		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+		[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
+		[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
 		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
 		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
-		MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
-		MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
 	}
 
 	namespace shared_cache
 	{
-		[[nodiscard]]
-		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
-		[[nodiscard]]
-		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+		[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
+		[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
 		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
 		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
-		MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
-		MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
+		//MPMALLOC_ATTR size_t MPMALLOC_CALL size_of(const void* ptr, size_t size);
 	}
 
 	namespace thread_cache
 	{
-		[[nodiscard]]
-		MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
-		[[nodiscard]]
-		MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
+		[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL try_allocate(size_t size);
+		[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL allocate(size_t size);
 		MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
 		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
-		MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
-		MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
+		//MPMALLOC_ATTR size_t MPMALLOC_CALL size_of(const void* ptr, size_t size);
 	}
 }
 #endif
@@ -224,19 +213,19 @@ namespace mpmalloc
 	}
 
 	template <typename T>
-	MPMALLOC_INLINE_ALWAYS static constexpr bool bit_test(T mask, uint_fast8_t index)
+	MPMALLOC_INLINE_ALWAYS static bool bit_test(T mask, uint_fast8_t index)
 	{
 		return (mask & ((T)1 << (T)index)) != (T)0;
 	}
 
 	template <typename T>
-	MPMALLOC_INLINE_ALWAYS static constexpr void bit_set(T& mask, uint_fast8_t index)
+	MPMALLOC_INLINE_ALWAYS static void bit_set(T& mask, uint_fast8_t index)
 	{
 		mask |= ((T)1 << index);
 	}
 
 	template <typename T>
-	MPMALLOC_INLINE_ALWAYS static constexpr void bit_reset(T& mask, uint_fast8_t index)
+	MPMALLOC_INLINE_ALWAYS static void bit_reset(T& mask, uint_fast8_t index)
 	{
 		mask &= (T)~((T)1 << index);
 	}
@@ -312,15 +301,15 @@ namespace mpmalloc
 		static size_t small_cache_size;
 		static size_t vas_granularity;
 #ifdef MPMALLOC_64BIT
-		static constexpr uint8_t CHUNK_RADIX_TREE_ROOT_SIZE_LOG2 = 8;
-		static constexpr uint32_t CHUNK_RADIX_TREE_ROOT_SIZE = 1UI32 << CHUNK_RADIX_TREE_ROOT_SIZE_LOG2;
-		static constexpr uint32_t CHUNK_RADIX_TREE_ROOT_SIZE_MASK = CHUNK_RADIX_TREE_ROOT_SIZE - 1;
-		static uint32_t chunk_radix_tree_leaf_size;
-		static uint32_t chunk_radix_tree_branch_size;
-		static uint32_t chunk_radix_tree_leaf_mask;
-		static uint32_t chunk_radix_tree_branch_mask;
-		static uint8_t chunk_radix_tree_branch_size_log2;
-		static uint8_t chunk_radix_tree_leaf_size_log2;
+		static constexpr uint8_t parallel_ptr_map_ROOT_SIZE_LOG2 = 8;
+		static constexpr uint32_t parallel_ptr_map_ROOT_SIZE = 1UI32 << parallel_ptr_map_ROOT_SIZE_LOG2;
+		static constexpr uint32_t parallel_ptr_map_ROOT_SIZE_MASK = parallel_ptr_map_ROOT_SIZE - 1;
+		static uint32_t parallel_ptr_map_leaf_size;
+		static uint32_t parallel_ptr_map_branch_size;
+		static uint32_t parallel_ptr_map_leaf_mask;
+		static uint32_t parallel_ptr_map_branch_mask;
+		static uint8_t parallel_ptr_map_branch_size_log2;
+		static uint8_t parallel_ptr_map_leaf_size_log2;
 #endif
 		static uint8_t page_size_log2;
 		static uint8_t chunk_size_log2;
@@ -343,12 +332,12 @@ namespace mpmalloc
 			max_address = info.lpMaximumApplicationAddress;
 			min_chunk = (void*)MPMALLOC_ALIGN_ROUND((size_t)info.lpMinimumApplicationAddress, chunk_size);
 #ifdef MPMALLOC_64BIT
-			chunk_radix_tree_leaf_size_log2 = chunk_size_log2 - 3;
-			chunk_radix_tree_branch_size_log2 = 64 - CHUNK_RADIX_TREE_ROOT_SIZE_LOG2 - chunk_radix_tree_leaf_size_log2 - chunk_size_log2;
-			chunk_radix_tree_branch_size = 1UI32 << chunk_radix_tree_branch_size_log2;
-			chunk_radix_tree_leaf_size = 1UI32 << chunk_radix_tree_leaf_size_log2;
-			chunk_radix_tree_branch_mask = chunk_radix_tree_branch_size - 1;
-			chunk_radix_tree_leaf_mask = chunk_radix_tree_leaf_size - 1;
+			parallel_ptr_map_leaf_size_log2 = chunk_size_log2 - 3;
+			parallel_ptr_map_branch_size_log2 = 64 - parallel_ptr_map_ROOT_SIZE_LOG2 - parallel_ptr_map_leaf_size_log2 - chunk_size_log2;
+			parallel_ptr_map_branch_size = 1UI32 << parallel_ptr_map_branch_size_log2;
+			parallel_ptr_map_leaf_size = 1UI32 << parallel_ptr_map_leaf_size_log2;
+			parallel_ptr_map_branch_mask = parallel_ptr_map_branch_size - 1;
+			parallel_ptr_map_leaf_mask = parallel_ptr_map_leaf_size - 1;
 #endif
 		}
 	}
@@ -693,6 +682,27 @@ namespace mpmalloc
 			}
 		}
 
+		MPMALLOC_INLINE_ALWAYS free_list_node* pop_all()
+		{
+			constexpr free_list_node* new_head = nullptr;
+			size_t counter_mask = params::chunk_size - 1;
+			size_t pointer_mask = ~counter_mask;
+			for (;; MPMALLOC_SPIN_WAIT)
+			{
+				size_t prior = head.load(std::memory_order_acquire);
+				free_list_node* prior_head = (free_list_node*)(prior & pointer_mask);
+				MPMALLOC_UNLIKELY_IF(prior_head == new_head)
+					return nullptr;
+				size_t counter = prior;
+				++counter;
+				counter &= counter_mask;
+				size_t desired = (size_t)new_head;
+				desired |= counter;
+				MPMALLOC_LIKELY_IF(head.compare_exchange_weak(prior, desired, std::memory_order_acquire, std::memory_order_relaxed))
+					return prior_head;
+			}
+		}
+
 		MPMALLOC_INLINE_ALWAYS void* peek()
 		{
 			size_t counter_mask = params::chunk_size - 1;
@@ -746,17 +756,17 @@ namespace mpmalloc
 
 #ifdef MPMALLOC_64BIT
 	template <typename T>
-	struct chunk_radix_tree
+	struct parallel_ptr_map
 	{
-		std::atomic<std::atomic<T*>*> roots[params::CHUNK_RADIX_TREE_ROOT_SIZE];
+		std::atomic<std::atomic<T*>*> roots[params::parallel_ptr_map_ROOT_SIZE];
 
 		MPMALLOC_INLINE_ALWAYS static void break_key(size_t key, uint_fast32_t& root_index, uint_fast32_t& branch_index, uint_fast32_t& leaf_index)
 		{
 			key >>= params::chunk_size_log2;
-			leaf_index = key & params::chunk_radix_tree_leaf_mask;
-			key >>= params::chunk_radix_tree_leaf_size_log2;
-			branch_index = key & params::chunk_radix_tree_branch_mask;
-			key >>= params::chunk_radix_tree_branch_size_log2;
+			leaf_index = key & params::parallel_ptr_map_leaf_mask;
+			key >>= params::parallel_ptr_map_leaf_size_log2;
+			branch_index = key & params::parallel_ptr_map_branch_mask;
+			key >>= params::parallel_ptr_map_branch_size_log2;
 			root_index = (uint_fast32_t)key;
 		}
 
@@ -768,14 +778,14 @@ namespace mpmalloc
 			std::atomic<T*>* branch = root.load(std::memory_order_acquire);
 			MPMALLOC_UNLIKELY_IF(branch == nullptr)
 			{
-				std::atomic<T*>* desired = (std::atomic<T*>*)large_cache::allocate(params::chunk_radix_tree_branch_size * sizeof(std::atomic<T*>));
+				std::atomic<T*>* desired = (std::atomic<T*>*)large_cache::allocate(params::parallel_ptr_map_branch_size * sizeof(std::atomic<T*>));
 				MPMALLOC_UNLIKELY_IF (root.compare_exchange_strong(branch, desired, std::memory_order_acquire, std::memory_order_relaxed))
 				{
 					branch = desired;
 				}
 				else
 				{
-					large_cache::deallocate(branch, params::chunk_radix_tree_branch_size * sizeof(std::atomic<T*>));
+					large_cache::deallocate(branch, params::parallel_ptr_map_branch_size * sizeof(std::atomic<T*>));
 					branch = root.load(std::memory_order_acquire);
 				}
 			}
@@ -783,14 +793,14 @@ namespace mpmalloc
 			T* leaf = leaf_ptr.load(std::memory_order_acquire);
 			MPMALLOC_UNLIKELY_IF(leaf == nullptr)
 			{
-				T* desired = (T*)large_cache::allocate(params::chunk_radix_tree_leaf_size * sizeof(T));
+				T* desired = (T*)large_cache::allocate(params::parallel_ptr_map_leaf_size * sizeof(T));
 				MPMALLOC_UNLIKELY_IF(leaf_ptr.compare_exchange_strong(leaf, desired, std::memory_order_acquire, std::memory_order_relaxed))
 				{
 					leaf = desired;
 				}
 				else
 				{
-					large_cache::deallocate(desired, params::chunk_radix_tree_leaf_size * sizeof(T));
+					large_cache::deallocate(desired, params::parallel_ptr_map_leaf_size * sizeof(T));
 					leaf = leaf_ptr.load(std::memory_order_acquire);
 				}
 			}
@@ -821,11 +831,6 @@ namespace mpmalloc
 			MPMALLOC_INVARIANT(leaf != nullptr);
 			destructor(leaf[leaf_index]);
 		}
-
-		template <typename F>
-		MPMALLOC_INLINE_ALWAYS void for_each(F&& function)
-		{
-		}
 	};
 #endif
 
@@ -840,17 +845,19 @@ namespace mpmalloc
 		}
 
 #ifndef MPMALLOC_64BIT
+		static size_t bin_count;
 		static shared_chunk_list* bins;
 
 		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
-			size_t buffer_size = sizeof(shared_chunk_list) << (32 - params::chunk_size_log2);
+			bin_count = (size_t)1 << (32 - params::chunk_size_log2);
+			size_t buffer_size = sizeof(shared_chunk_list) << bin_count;
 			bins = (shared_chunk_list*)backend::allocate_chunk_aligned(buffer_size);
 		}
 
 		MPMALLOC_ATTR void MPMALLOC_CALL finalize()
 		{
-			size_t buffer_size = sizeof(shared_chunk_list) << (32 - params::chunk_size_log2);
+			size_t buffer_size = sizeof(shared_chunk_list) << bin_count;
 			backend::deallocate(bins, buffer_size);
 		}
 
@@ -879,21 +886,18 @@ namespace mpmalloc
 			bins[size].push(ptr);
 		}
 
-		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
+		template <typename F>
+		MPMALLOC_INLINE_ALWAYS void for_each_bin(F&& function)
 		{
-			return 0;
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
-		{
-			return 0;
+			for (size_t i = 0; i != bin_count; ++i)
+				function(bins[i], i);
 		}
 #else
 		MPMALLOC_SHARED_ATTR static shared_chunk_list single_chunk_bin;
 
 		static constexpr uint8_t SHARD_COUNT_LOG2 = 8;
 		static constexpr size_t SHARD_MASK = 255;
-		static chunk_radix_tree<shared_chunk_list> lookup;
+		static parallel_ptr_map<shared_chunk_list> lookup;
 
 		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
@@ -932,16 +936,9 @@ namespace mpmalloc
 			lookup.find_or_insert(size)->push(ptr);
 		}
 
-		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
+		template <typename F>
+		MPMALLOC_INLINE_ALWAYS void for_each_bin(F&& function)
 		{
-			size_t r = 0;
-			return r;
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
-		{
-			size_t r = 0;
-			return r;
 		}
 #endif
 	}
@@ -1073,7 +1070,7 @@ namespace mpmalloc
 #ifndef MPMALLOC_64BIT
 		static shared_block_allocator* lookup;
 #else
-		static chunk_radix_tree<shared_block_allocator> lookup;
+		static parallel_ptr_map<shared_block_allocator> lookup;
 #endif
 
 		static shared_allocator_list* bins;
@@ -1168,18 +1165,6 @@ namespace mpmalloc
 		MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size)
 		{
 			return round_pow2(size);
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
-		{
-			size_t r = 0;
-			return r;
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
-		{
-			size_t r = 0;
-			return r;
 		}
 	}
 
@@ -1441,20 +1426,6 @@ namespace mpmalloc
 		MPMALLOC_ATTR void MPMALLOC_CALL finalize()
 		{
 		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
-		{
-			size_t r = 0;
-
-			return r;
-		}
-
-		MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
-		{
-			size_t r = 0;
-
-			return r;
-		}
 	}
 
 	MPMALLOC_ATTR void MPMALLOC_CALL init(const init_options* options)
@@ -1555,20 +1526,21 @@ namespace mpmalloc
 
 	MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
 	{
-		size_t r = 0;
-		r += thread_cache::trim();
-		r += shared_cache::trim();
-		r += large_cache::trim();
-		return r;
-	}
-
-	MPMALLOC_ATTR size_t MPMALLOC_CALL purge()
-	{
-		size_t r = 0;
-		r += thread_cache::purge();
-		r += shared_cache::purge();
-		r += large_cache::purge();
-		return r;
+		size_t freed_bytes = 0;
+		large_cache::for_each_bin([&](shared_chunk_list& bin, size_t bin_index)
+		{
+			size_t size = (bin_index + 1) << params::chunk_size_log2;
+			size_t count = 0;
+			free_list_node* next;
+			for (free_list_node* n = bin.pop_all(); n != nullptr; n = next)
+			{
+				++count;
+				next = n->next;
+				backend::deallocate(n, size);
+			}
+			freed_bytes += count * size;
+		});
+		return freed_bytes;
 	}
 
 	MPMALLOC_ATTR backend_options MPMALLOC_CALL default_backend()
