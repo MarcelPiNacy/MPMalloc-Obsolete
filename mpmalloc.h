@@ -848,8 +848,8 @@ namespace mpmalloc
 		static size_t bin_count;
 		static shared_chunk_list* bins;
 
-		MPMALLOC_SHARED_ATTR static std::atomic<size_t> min_bin;
-		MPMALLOC_SHARED_ATTR static std::atomic<size_t> max_bin;
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> min_bin = UINTPTR_MAX;
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> max_bin = 0;
 
 		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
@@ -891,6 +891,7 @@ namespace mpmalloc
 			if (size < prior)
 				(void)min_bin.compare_exchange_strong(prior, size, std::memory_order_release, std::memory_order_relaxed);
 			prior = max_bin.load(std::memory_order_acquire);
+			++size;
 			if (size > prior)
 				(void)max_bin.compare_exchange_strong(prior, size, std::memory_order_release, std::memory_order_relaxed);
 		}
