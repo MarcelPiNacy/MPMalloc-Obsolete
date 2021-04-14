@@ -848,10 +848,13 @@ namespace mpmalloc
 		static size_t bin_count;
 		static shared_chunk_list* bins;
 
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> min_bin;
+		MPMALLOC_SHARED_ATTR static std::atomic<size_t> max_bin;
+
 		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
 			bin_count = (size_t)1 << (32 - params::chunk_size_log2);
-			size_t buffer_size = sizeof(shared_chunk_list) << bin_count;
+			size_t buffer_size = sizeof(shared_chunk_list) * bin_count;
 			bins = (shared_chunk_list*)backend::allocate_chunk_aligned(buffer_size);
 		}
 
@@ -884,12 +887,18 @@ namespace mpmalloc
 			size >>= params::chunk_size_log2;
 			--size;
 			bins[size].push(ptr);
+			size_t prior = min_bin.load(std::memory_order_acquire);
+			if (size < prior)
+				(void)min_bin.compare_exchange_strong(prior, size, std::memory_order_release, std::memory_order_relaxed);
+			prior = max_bin.load(std::memory_order_acquire);
+			if (size > prior)
+				(void)max_bin.compare_exchange_strong(prior, size, std::memory_order_release, std::memory_order_relaxed);
 		}
 
 		template <typename F>
 		MPMALLOC_INLINE_ALWAYS void for_each_bin(F&& function)
 		{
-			for (size_t i = 0; i != bin_count; ++i)
+			for (size_t i = min_bin.load(std::memory_order_acquire); i != max_bin.load(std::memory_order_acquire); ++i)
 				function(bins[i], i);
 		}
 #else
@@ -1316,7 +1325,7 @@ namespace mpmalloc
 		struct thread_cache_state
 		{
 			free_list small_bins[params::SIZE_CLASS_COUNT];
-			cache_aligned<recovered_list>small_recovered[params::SIZE_CLASS_COUNT];
+			cache_aligned<recovered_list> small_recovered[params::SIZE_CLASS_COUNT];
 			free_list* large_bins;
 			cache_aligned<recovered_list>* large_recovered;
 		};
