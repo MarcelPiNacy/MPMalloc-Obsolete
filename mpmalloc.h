@@ -899,7 +899,10 @@ namespace mpmalloc
 		template <typename F>
 		MPMALLOC_INLINE_ALWAYS void for_each_bin(F&& function)
 		{
-			for (size_t i = min_bin.load(std::memory_order_acquire); i != max_bin.load(std::memory_order_acquire); ++i)
+			size_t i = min_bin.load(std::memory_order_acquire);
+			MPMALLOC_UNLIKELY_IF(i == UINT32_MAX)
+				return;
+			for (; i != max_bin.load(std::memory_order_acquire); ++i)
 				function(bins[i], i);
 		}
 #else
