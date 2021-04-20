@@ -32,6 +32,14 @@
 #define MPMALLOC_SPIN_THRESHOLD 16
 #endif
 
+#ifndef MPMALLOC_MAX_LOAD_FACTOR_NUMERATOR
+#define MPMALLOC_MAX_LOAD_FACTOR_NUMERATOR 15
+#endif
+
+#ifndef MPMALLOC_MAX_LOAD_FACTOR_DENOMINATOR
+#define MPMALLOC_MAX_LOAD_FACTOR_DENOMINATOR 16
+#endif
+
 
 
 namespace mpmalloc
@@ -268,8 +276,37 @@ namespace mpmalloc
 		return (size_t)1 << (floor_log2(value) + 1);
 	}
 
+	static constexpr uint8_t constexpr_log2(size_t value)
+	{
+#if UINT32_MAX == UINTPTR_MAX
+		constexpr uint8_t lookup[] = { 0, 9, 1, 10, 13, 21, 2, 29, 11, 14, 16, 18, 22, 25, 3, 30, 8, 12, 20, 28, 15, 17, 24, 7, 19, 27, 23, 6, 26, 5, 4, 31 };
+		value |= value >> 1;
+		value |= value >> 2;
+		value |= value >> 4;
+		value |= value >> 8;
+		value |= value >> 16;
+		return (uint8_t)lookup[(uint32_t)(value * 0x07C4ACDD) >> 27];
+#else
+		constexpr uint8_t lookup[] =
+		{
+			63, 0, 58, 1, 59, 47, 53, 2, 60, 39, 48, 27, 54, 33, 42, 3, 61, 51, 37, 40, 49, 18, 28, 20, 55, 30, 34, 11, 43, 14, 22, 4,
+			62, 57, 46, 52, 38, 26, 32, 41, 50, 36, 17, 19, 29, 10, 13, 21, 56, 45, 25, 31, 35, 16, 9, 12, 44, 24, 15, 8, 23, 7, 6, 5
+		};
+		value |= value >> 1;
+		value |= value >> 2;
+		value |= value >> 4;
+		value |= value >> 8;
+		value |= value >> 16;
+		value |= value >> 32;
+		return (uint8_t)lookup[((uint64_t)((value - (value >> 1)) * 0x07EDD5E59A4E28C2)) >> 58];
+#endif
+	}
+
 	namespace params
 	{
+		static constexpr size_t cache_line_size = std::hardware_constructive_interference_size;
+		static constexpr uint8_t cache_line_size_log2 = constexpr_log2(cache_line_size);
+
 		static constexpr uint_fast16_t SMALL_SIZE_CLASSES[] =
 		{
 			1, 2, //Q=1
@@ -441,14 +478,14 @@ namespace mpmalloc
 			return code == WAIT_TIMEOUT;
 		}
 
-		template <typename T>
-		MPMALLOC_INLINE_ALWAYS static void futex_await(std::atomic<T>& value, T prior)
+		template <typename T, typename U>
+		MPMALLOC_INLINE_ALWAYS static void futex_await(T& value, U prior)
 		{
 			wait_on_addr(&value, &prior, sizeof(value), INFINITE);
 		}
 
 		template <typename T>
-		MPMALLOC_INLINE_ALWAYS static void futex_signal(std::atomic<T>& value)
+		MPMALLOC_INLINE_ALWAYS static void futex_signal(T& value)
 		{
 			wake_by_addr(&value);
 		}
@@ -582,16 +619,16 @@ namespace mpmalloc
 	}
 
 	template <typename F>
-	struct defer
+	struct scoped_callback
 	{
 		F callback;
 
-		constexpr defer(F&& callback)
+		constexpr scoped_callback(F&& callback)
 			: callback(std::forward<F>(callback))
 		{
 		}
 
-		~defer()
+		~scoped_callback()
 		{
 			callback();
 		}
@@ -608,6 +645,7 @@ namespace mpmalloc
 		free_list_node* next;
 	};
 
+	// Plain old free-list.
 	struct free_list
 	{
 		free_list_node* head;
@@ -633,6 +671,7 @@ namespace mpmalloc
 		}
 	};
 
+	// MPSC Wait-free free-list, AKA bottleneck C:
 	struct recovered_list
 	{
 		std::atomic<free_list_node*> head;
@@ -640,12 +679,11 @@ namespace mpmalloc
 		MPMALLOC_INLINE_ALWAYS void push(void* ptr)
 		{
 			free_list_node* new_head = (free_list_node*)ptr;
-			for (;; MPMALLOC_SPIN_WAIT)
+			free_list_node* prior = head.exchange(new_head, std::memory_order_acquire);
+			if (prior != nullptr)
 			{
-				free_list_node* prior = head.load(std::memory_order_acquire);
-				new_head->next = prior;
-				MPMALLOC_LIKELY_IF(head.compare_exchange_weak(prior, new_head, std::memory_order_release, std::memory_order_relaxed))
-					break;
+				prior->next = new_head;
+				std::atomic_thread_fence(std::memory_order_release);
 			}
 		}
 
@@ -660,81 +698,72 @@ namespace mpmalloc
 		}
 	};
 
+	struct tagged_chunk_ptr
+	{
+		size_t mask;
+
+		template <typename T>
+		MPMALLOC_INLINE_ALWAYS void set(T* ptr, size_t tag)
+		{
+			MPMALLOC_INVARIANT(((size_t)ptr & params::chunk_size_mask) == 0);
+			mask = (size_t)ptr | (tag & params::chunk_size_mask);
+		}
+
+		MPMALLOC_INLINE_ALWAYS size_t tag() const
+		{
+			return mask & params::chunk_size_mask;
+		}
+
+		template <typename T = void>
+		MPMALLOC_INLINE_ALWAYS T* ptr() const
+		{
+			return (T*)(mask & ~params::chunk_size_mask);
+		}
+	};
+
+	// MPMC Lock-free free-list, AKA bottleneck C':
 	struct shared_chunk_list
 	{
-		std::atomic_size_t head;
+		std::atomic<tagged_chunk_ptr> head;
 
 		MPMALLOC_INLINE_ALWAYS void push(void* ptr)
 		{
-			size_t counter_mask = params::chunk_size - 1;
-			size_t pointer_mask = ~counter_mask;
-
 			free_list_node* new_head = (free_list_node*)ptr;
-
+			tagged_chunk_ptr prior, desired;
 			for (;; MPMALLOC_SPIN_WAIT)
 			{
-				size_t prior = head.load(std::memory_order_acquire);
-				free_list_node* prior_head = (free_list_node*)(prior & pointer_mask);
-				new_head->next = prior_head;
-				size_t counter = prior;
-				++counter;
-				counter &= counter_mask;
-				size_t desired = (size_t)new_head;
-				desired |= counter;
-				MPMALLOC_LIKELY_IF(head.compare_exchange_weak(prior, desired, std::memory_order_release, std::memory_order_relaxed))
+				prior = head.load(std::memory_order_acquire);
+				new_head->next = prior.ptr<free_list_node>();
+				desired.set(new_head, prior.tag() + 1);
+				if (head.compare_exchange_weak(prior, desired, std::memory_order_release, std::memory_order_relaxed))
 					break;
 			}
 		}
 
 		MPMALLOC_INLINE_ALWAYS void* pop()
 		{
-			size_t counter_mask = params::chunk_size - 1;
-			size_t pointer_mask = ~counter_mask;
+			tagged_chunk_ptr prior, desired;
 			for (;; MPMALLOC_SPIN_WAIT)
 			{
-				size_t prior = head.load(std::memory_order_acquire);
-				free_list_node* prior_head = (free_list_node*)(prior & pointer_mask);
-				MPMALLOC_UNLIKELY_IF(prior_head == nullptr)
+				prior = head.load(std::memory_order_acquire);
+				free_list_node* ptr = prior.ptr<free_list_node>();
+				if (ptr == nullptr)
 					return nullptr;
-				free_list_node* new_head = prior_head->next;
-				size_t counter = prior;
-				++counter;
-				counter &= counter_mask;
-				size_t desired = (size_t)new_head;
-				desired |= counter;
-				MPMALLOC_LIKELY_IF(head.compare_exchange_weak(prior, desired, std::memory_order_acquire, std::memory_order_relaxed))
-					return prior_head;
+				desired.set(ptr->next, prior.tag() + 1);
+				if (head.compare_exchange_weak(prior, desired, std::memory_order_acquire, std::memory_order_relaxed))
+					return ptr;
 			}
 		}
 
 		MPMALLOC_INLINE_ALWAYS free_list_node* pop_all()
 		{
-			constexpr free_list_node* new_head = nullptr;
-			size_t counter_mask = params::chunk_size - 1;
-			size_t pointer_mask = ~counter_mask;
-			for (;; MPMALLOC_SPIN_WAIT)
-			{
-				size_t prior = head.load(std::memory_order_acquire);
-				free_list_node* prior_head = (free_list_node*)(prior & pointer_mask);
-				MPMALLOC_UNLIKELY_IF(prior_head == new_head)
-					return nullptr;
-				size_t counter = prior;
-				++counter;
-				counter &= counter_mask;
-				size_t desired = (size_t)new_head;
-				desired |= counter;
-				MPMALLOC_LIKELY_IF(head.compare_exchange_weak(prior, desired, std::memory_order_acquire, std::memory_order_relaxed))
-					return prior_head;
-			}
+			tagged_chunk_ptr prior = head.exchange({}, std::memory_order_acquire);
+			return prior.ptr<free_list_node>();
 		}
 
 		MPMALLOC_INLINE_ALWAYS void* peek()
 		{
-			size_t counter_mask = params::chunk_size - 1;
-			size_t pointer_mask = ~counter_mask;
-			size_t prior = head.load(std::memory_order_acquire);
-			prior &= pointer_mask;
-			return (void*)prior;
+			return head.load(std::memory_order_acquire).ptr();
 		}
 	};
 
@@ -781,90 +810,145 @@ namespace mpmalloc
 
 #ifdef MPMALLOC_64BIT
 
-	// Reference-counted alternative to RCU for systems that don't support it.
-	struct parallel_ptr_map_ctrl
+	namespace hazard_ptr
 	{
-		static constexpr uint32_t MAX_UNRECLAIMED_GENERATIONS = 4;
-		static constexpr uint32_t MOD_MASK = MAX_UNRECLAIMED_GENERATIONS - 1;
+		static constexpr uint32_t MAX_THREADS = 16; // 16*256 = 4096 max threads accessing a parallel_chunk_map, also useful in match_vector.
 
-		std::atomic_uint32_t	ref_counts[MAX_UNRECLAIMED_GENERATIONS];
-		std::atomic<void*>		pointers[MAX_UNRECLAIMED_GENERATIONS];
-		std::atomic_uint32_t	head;
-		uint32_t				tail;
-		std::atomic_uint32_t	size;
-
-		uint32_t new_generation(void* ptr)
+		struct MPMALLOC_SHARED_ATTR node
 		{
-			while (true)
+			std::atomic<void*> pointer;
+			
+			MPMALLOC_INLINE_ALWAYS void protect(void* ptr)
 			{
-				uint32_t prior = size.load(std::memory_order_acquire);
-				MPMALLOC_UNLIKELY_IF(prior >= MAX_UNRECLAIMED_GENERATIONS)
-					continue;
-				prior = size.fetch_add(1, std::memory_order_acquire);
-				MPMALLOC_LIKELY_IF(prior < MAX_UNRECLAIMED_GENERATIONS)
-					break;
-				(void)size.fetch_sub(1, std::memory_order_relaxed);
-				os::futex_await(size, prior);
+				pointer.store(ptr, std::memory_order_release);
 			}
-			uint32_t i = head.fetch_add(1, std::memory_order_acquire) & MOD_MASK;
-			(void)ref_counts[i].fetch_add(1, std::memory_order_release);
-			pointers[i].store(ptr, std::memory_order_release);
-			return i;
-		}
 
-		uint32_t begin_read_latest()
-		{
-			for (;; MPMALLOC_SPIN_WAIT)
+			MPMALLOC_INLINE_ALWAYS void release()
 			{
-				MPMALLOC_UNLIKELY_IF(size.load(std::memory_order_acquire) == 0)
-					return UINT32_MAX;
-				uint32_t prior = head.load(std::memory_order_acquire) & MOD_MASK;
-				uint32_t rc = ref_counts[prior].load(std::memory_order_acquire);
-				MPMALLOC_LIKELY_IF(rc != 0 && ref_counts[prior].compare_exchange_weak(rc, rc + 1U, std::memory_order_acquire, std::memory_order_relaxed))
-					return prior;
+				pointer.store(nullptr, std::memory_order_release);
 			}
-		}
+		};
 
-		void end_read(uint32_t generation)
+		struct shared_context
 		{
-			(void)ref_counts[generation].fetch_sub(1, std::memory_order_release);
-		}
+			node nodes[MAX_THREADS];
 
-		void* get_pointer(uint32_t generation)
-		{
-			for (;;MPMALLOC_SPIN_WAIT)
+			MPMALLOC_INLINE_ALWAYS node* acquire()
 			{
-				void* ptr = pointers[generation].load(std::memory_order_acquire);
-				MPMALLOC_LIKELY_IF(ptr != nullptr)
-					return ptr;
-			}
-		}
-
-		template <typename F>
-		bool collect(F&& destructor)
-		{
-			uint32_t r = 0;
-			while (size.load(std::memory_order_acquire) > 1)
-			{
-				std::atomic_uint32_t& counter = ref_counts[tail];
-				(void)counter.fetch_sub(1, std::memory_order_release);
-				uint32_t retry = 0;
-				while (true)
+				for (;; os::this_thread_yield())
 				{
-					uint32_t prior = counter.load(std::memory_order_acquire);
-					MPMALLOC_LIKELY_IF(prior == 0)
-						break;
-					os::futex_await(counter, prior);
+					for (node& e : nodes)
+					{
+						void* prior = e.pointer.load(std::memory_order_acquire);
+						if (prior == nullptr && e.pointer.compare_exchange_strong(prior, (void*)UINTPTR_MAX, std::memory_order_release, std::memory_order_relaxed))
+							return &e;
+					}
 				}
-				void* const ptr = pointers[tail].exchange(nullptr, std::memory_order_acquire);
-				++tail;
-				(void)size.fetch_sub(1, std::memory_order_release);
-				destructor(ptr);
-				++r;
 			}
-			return r;
-		}
-	};
+		};
+
+		struct local_context
+		{
+			void** bump;
+			void* unreclaimed[MAX_THREADS];
+
+			void init()
+			{
+				bump = unreclaimed;
+			}
+
+			static uint8_t bad_hash(size_t key)
+			{
+				key >>= params::cache_line_size_log2;
+				uint8_t hash = (uint8_t)key;
+				key >>= 8;
+				hash ^= (uint8_t)key;
+				return hash;
+			}
+
+			uint32_t match_vector(uint8_t* hints, uint8_t hint, uint8_t count)
+			{
+				uint32_t mask = _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_load_si128((const __m128i*)hints), _mm_set1_epi8(hint)));
+				mask |= (1UI32 << count) - 1UI32;
+				if (mask == 0)
+					return MAX_THREADS;
+				return mask;
+			}
+
+			template <typename F>
+			bool try_collect(shared_context& parent, F&& destructor)
+			{
+				uint8_t count = 0;
+				alignas (16) uint8_t hints[MAX_THREADS];
+				void* ptrs[MAX_THREADS];
+				for (auto& n : parent.nodes)
+				{
+					void* ptr = n.pointer.load(std::memory_order_acquire);
+					if (ptr == nullptr)
+						continue;
+					hints[count] = bad_hash((size_t)ptr);
+					ptrs[count] = ptr;
+					++count;
+				}
+
+				uint_fast8_t reclaimed_count = 0;
+				for (auto i = unreclaimed; i != bump; ++i)
+				{
+					uint8_t hint = bad_hash((size_t)*i);
+					uint8_t j;
+					uint32_t mask = match_vector(hints, hint, count);
+					bool found = false;
+					for (; mask != 0 && !found; bit_reset(mask, j))
+					{
+						j = find_first_set(mask);
+						if (ptrs[j] == *i)
+							found = true;
+					}
+					if (!found)
+					{
+						++reclaimed_count;
+						--bump;
+						destructor(*i);
+						if (i != bump)
+							*i = *bump;
+					}
+				}
+				return reclaimed_count != 0;
+			}
+
+			template <typename F>
+			void collect(shared_context& parent, F&& destructor)
+			{
+				for (;; os::this_thread_yield())
+					if (try_collect(parent, destructor))
+						break;
+			}
+
+			template <typename F>
+			void retire(shared_context& parent, void* ptr, F&& destructor)
+			{
+				if (bump == unreclaimed + MAX_THREADS)
+					collect(parent, destructor);
+				*bump = ptr;
+				++bump;
+				try_collect(parent, std::forward<F>(destructor));
+			}
+		};
+	}
+	
+	MPMALLOC_INLINE_ALWAYS static size_t hash_chunk_ptr(size_t key, size_t seed)
+	{
+		key >>= params::chunk_size_log2;
+#ifdef MPMALLOC_DEBUG
+		key ^= seed;
+#endif
+		key ^= key >> 32;
+		key *= 0xd6e8feb86659fd93ULL;
+		key ^= key >> 32;
+		key *= 0xd6e8feb86659fd93ULL;
+		key ^= key >> 32;
+		return key;
+	}
 
 	struct group_ctrl
 	{
@@ -884,13 +968,30 @@ namespace mpmalloc
 		std::atomic<group_ctrl> ctrl;
 		std::atomic<size_t> keys[group_ctrl::GROUP_SIZE];
 
+		uint_fast8_t exclusive_insert(size_t key, uint8_t hint)
+		{
+			group_ctrl prior = non_atomic_load(ctrl);
+#ifdef MPMALLOC_DEBUG
+			for (uint8_t i = 0; i != prior.count; ++i)
+				MPMALLOC_UNLIKELY_IF(prior.hints[i] == hint)
+					MPMALLOC_INVARIANT(non_atomic_load(keys[i]) != key);
+#endif
+			MPMALLOC_UNLIKELY_IF(prior.count == group_ctrl::GROUP_SIZE)
+				return group_ctrl::GROUP_SIZE;
+			group_ctrl desired = prior;
+			desired.hints[desired.count] = hint;
+			++desired.count;
+			non_atomic_store(ctrl, desired);
+			non_atomic_store(keys[prior.count], key);
+			return prior.count;
+		}
+
 		uint_fast8_t find_or_insert(size_t key, uint8_t hint)
 		{
 			group_ctrl prior;
 			for (;; MPMALLOC_SPIN_WAIT)
 			{
 				prior = ctrl.load(std::memory_order_acquire);
-				group_ctrl current = ctrl.load(std::memory_order_acquire);
 				for (uint8_t i = 0; i != prior.count; ++i)
 					MPMALLOC_LIKELY_IF(prior.hints[i] == hint && keys[i].load(std::memory_order_acquire) == key)
 						return i;
@@ -912,10 +1013,10 @@ namespace mpmalloc
 			for (;; MPMALLOC_SPIN_WAIT)
 			{
 				prior = ctrl.load(std::memory_order_acquire);
-				group_ctrl current = ctrl.load(std::memory_order_acquire);
 				for (uint8_t i = 0; i != prior.count; ++i)
 					MPMALLOC_LIKELY_IF(prior.hints[i] == hint && keys[i].load(std::memory_order_acquire) == key)
 						return i;
+				group_ctrl current = ctrl.load(std::memory_order_acquire);
 				MPMALLOC_UNLIKELY_IF(memcmp(&prior, &current, 8) != 0)
 					return group_ctrl::GROUP_SIZE;
 				prior = current;
@@ -924,11 +1025,11 @@ namespace mpmalloc
 	};
 
 	template <typename T>
-	struct parallel_ptr_map_shard
+	struct MPMALLOC_SHARED_ATTR parallel_chunk_map_shard
 	{
-		struct MPMALLOC_SHARED_ATTR parallel_ptr_map_shard_header
+		struct MPMALLOC_SHARED_ATTR parallel_chunk_map_shard_header
 		{
-			std::atomic_uint32_t used_count;
+			std::atomic_size_t used_count;
 			size_t group_mask;
 
 			static size_t min_group_count()
@@ -939,29 +1040,29 @@ namespace mpmalloc
 
 			static size_t buffer_size(size_t group_count)
 			{
-				size_t size = sizeof(parallel_ptr_map_shard_header);
+				size_t size = sizeof(parallel_chunk_map_shard_header);
 				size += group_count * sizeof(group_type);
 				size += sizeof(T) * group_ctrl::GROUP_SIZE;
 				return MPMALLOC_ALIGN_ROUND(size, params::chunk_size);
 			}
 
-			static parallel_ptr_map_shard_header* allocate(size_t group_count)
+			static parallel_chunk_map_shard_header* allocate(size_t group_count)
 			{
 				size_t size = buffer_size(group_count);
-				parallel_ptr_map_shard_header* r = (parallel_ptr_map_shard_header*)backend::allocate(size);
+				parallel_chunk_map_shard_header* r = (parallel_chunk_map_shard_header*)backend::allocate(size);
 				(void)memset(r, 0, size);
 				r->group_mask = group_count - 1;
 				return r;
 			}
 
-			void destroy()
+			static bool is_valid_load_factor(size_t used_count, size_t capacity)
 			{
-				backend::deallocate(this, buffer_size(group_mask + 1));
+				return used_count >= (((capacity * group_ctrl::GROUP_SIZE) * MPMALLOC_MAX_LOAD_FACTOR_NUMERATOR) / MPMALLOC_MAX_LOAD_FACTOR_DENOMINATOR);
 			}
 
 			bool should_expand() const
 			{
-				return used_count.load(std::memory_order_acquire) >= ((((group_mask + 1) * group_ctrl::GROUP_SIZE) * 3) / 4);
+				return is_valid_load_factor(used_count.load(std::memory_order_acquire), group_mask + 1);
 			}
 
 			group_type* groups() const
@@ -973,133 +1074,250 @@ namespace mpmalloc
 			{
 				return (T*)(groups() + (group_mask + 1));
 			}
+
+			T* exclusive_insert(size_t key, size_t hash)
+			{
+				uint8_t i;
+				size_t group_index;
+				uint8_t hint = (uint8_t)hash;
+				hash >>= 8;
+				group_index = hash;
+				for (;; ++group_index)
+				{
+					group_index &= group_mask;
+					group_type& group = groups()[group_index];
+					i = group.exclusive_insert(key, hint);
+					MPMALLOC_LIKELY_IF(i != group_ctrl::GROUP_SIZE)
+						break;
+				}
+				MPMALLOC_LIKELY_IF((i & group_type::INSERTED) != 0)
+					non_atomic_store(used_count, non_atomic_load(used_count) + 1);
+				size_t value_index = group_index * 7 + (i & ~group_type::INSERTED);
+				return &values()[value_index];
+			}
+
+			template <typename F>
+			void for_each(F&& function)
+			{
+			}
+
+			template <typename F>
+			void for_each_value(F&& function)
+			{
+			}
 		};
 
-		parallel_ptr_map_ctrl ctrl;
+		thread_local inline static hazard_ptr::local_context local_hp_ctx;
 
-		parallel_ptr_map_shard_header* begin_read(uint32_t& out_generation)
+		MPMALLOC_SHARED_ATTR hazard_ptr::shared_context shared_ctx;
+		MPMALLOC_SHARED_ATTR std::atomic<parallel_chunk_map_shard_header*> map;
+
+		MPMALLOC_INLINE_ALWAYS static size_t get_hash_seed()
 		{
-			out_generation = ctrl.begin_read_latest();
-			MPMALLOC_UNLIKELY_IF(out_generation == UINT32_MAX)
-				return nullptr;
-			return (parallel_ptr_map_shard_header*)ctrl.get_pointer(out_generation);
+			return 0;
 		}
 
-		parallel_ptr_map_shard_header* expand(parallel_ptr_map_shard_header* prior, uint32_t& out_generation)
+		MPMALLOC_INLINE_NEVER parallel_chunk_map_shard_header* expand(parallel_chunk_map_shard_header* prior, hazard_ptr::node* n)
 		{
-			size_t new_group_count = prior == nullptr ? parallel_ptr_map_shard_header::min_group_count() : ((prior->group_mask + 1) * 2);
-			parallel_ptr_map_shard_header* r = parallel_ptr_map_shard_header::allocate(new_group_count);
-			MPMALLOC_LIKELY_IF(prior != nullptr)
+			parallel_chunk_map_shard_header* new_map;
+			size_t new_group_count = 0;
+			while (true)
 			{
-				ctrl.end_read(out_generation);
-				uint32_t reclaimed_count;
-				do
+				if (prior == nullptr)
 				{
-					reclaimed_count = ctrl.collect([](void* ptr)
+					new_group_count = parallel_chunk_map_shard_header::min_group_count();
+				}
+				else
+				{
+					new_group_count = ((prior->group_mask + 1) * 2);
+				}
+
+				parallel_chunk_map_shard_header* current = map.load(std::memory_order_acquire);
+				if (prior != current)
+				{
+					for (;; MPMALLOC_SPIN_WAIT)
 					{
-						((parallel_ptr_map_shard_header*)ptr)->destroy();
+						prior = current;
+						n->protect(prior);
+						current = map.load(std::memory_order_acquire);
+						if (prior == current)
+							break;
+					}
+					if (prior != nullptr && !prior->should_expand())
+						return prior;
+				}
+
+				new_map = parallel_chunk_map_shard_header::allocate(new_group_count);
+				prior->for_each([&](size_t key, T& value)
+				{
+					size_t hash = hash_chunk_ptr(key, get_hash_seed());
+					T* target = prior->exclusive_insert(key, hash);
+				});
+				n->protect(new_map);
+
+				if (prior != nullptr)
+				{
+					local_hp_ctx.retire(shared_ctx, prior, [](void* ptr)
+					{
+						parallel_chunk_map_shard_header* m = (parallel_chunk_map_shard_header*)ptr;
+						backend::deallocate(m, parallel_chunk_map_shard_header::buffer_size(m->group_mask + 1));
 					});
-				} while (reclaimed_count == 0);
+				}
+				return new_map;
 			}
-			out_generation = ctrl.new_generation(r);
-			return r;
 		}
 
 		T* find_or_insert(size_t key, size_t hash)
 		{
-			uint32_t generation;
-			parallel_ptr_map_shard_header* map = begin_read(generation);
-			MPMALLOC_UNLIKELY_IF(map == nullptr || map->should_expand())
-				map = expand(map, generation);
-			defer callback = [&] { ctrl.end_read(generation); };
-			uint8_t hint = (uint8_t)hash;
-			hash >>= 8;
-			size_t group_index = hash;
-			uint8_t i;
-			for (;; ++group_index)
+			while (true)
 			{
-				group_index &= map->group_mask;
-				group_type& group = map->groups()[group_index];
-				i = group.find_or_insert(key, hint);
-				MPMALLOC_LIKELY_IF(i != group_ctrl::GROUP_SIZE)
-					break;
+				hazard_ptr::node* n = shared_ctx.acquire();
+				scoped_callback callback = [&]
+				{
+					n->release();
+				};
+				parallel_chunk_map_shard_header* prior = map.load(std::memory_order_acquire);
+				uint8_t i;
+				size_t group_index;
+				uint8_t hint = (uint8_t)hash;
+				hash >>= 8;
+				for (;; MPMALLOC_SPIN_WAIT)
+				{
+					n->protect(prior);
+					parallel_chunk_map_shard_header* current = map.load(std::memory_order_acquire);
+					if (prior == current)
+						break;
+					prior = current;
+				}
+				if (prior == nullptr || prior->should_expand())
+					prior = expand(prior, n);
+				group_index = hash;
+				for (;; ++group_index)
+				{
+					group_index &= prior->group_mask;
+					group_type& group = prior->groups()[group_index];
+					i = group.find_or_insert(key, hint);
+					MPMALLOC_LIKELY_IF(i != group_ctrl::GROUP_SIZE)
+					{
+						MPMALLOC_LIKELY_IF((i & group_type::INSERTED) != 0)
+							(void)prior->used_count.fetch_add(1, std::memory_order_relaxed);
+						size_t value_index = group_index * 7 + (i & ~group_type::INSERTED);
+						return &prior->values()[value_index];
+					}
+					if (map.load(std::memory_order_acquire) != prior)
+						break;
+				}
 			}
-			MPMALLOC_LIKELY_IF((i & group_type::INSERTED) != 0)
-				(void)map->used_count.fetch_add(1, std::memory_order_relaxed);
-			size_t value_index = group_index * 7 + (i & ~group_type::INSERTED);
-			return &map->values()[value_index];
 		}
 
 		T* find(size_t key, size_t hash)
 		{
-			uint32_t generation;
-			parallel_ptr_map_shard_header* map = begin_read(generation);
-			MPMALLOC_UNLIKELY_IF(map == nullptr)
-				return nullptr;
-			defer callback = [&] { ctrl.end_read(generation); };
-			uint8_t hint = (uint8_t)hash;
-			hash >>= 8;
-			size_t group_index = hash;
-			uint8_t i;
-			for (;; ++group_index)
+			while (true)
 			{
-				group_index &= map->group_mask;
-				group_type& group = map->groups()[group_index];
-				i = group.find(key, hint);
-				MPMALLOC_LIKELY_IF(i != group_ctrl::GROUP_SIZE)
+				hazard_ptr::node* n = shared_ctx.acquire();
+				scoped_callback callback = [&]
+				{
+					n->release();
+				};
+				parallel_chunk_map_shard_header* prior = map.load(std::memory_order_acquire);
+				for (;; MPMALLOC_SPIN_WAIT)
+				{
+					if (prior == nullptr)
+						return nullptr;
+					n->protect(prior);
+					parallel_chunk_map_shard_header* current = map.load(std::memory_order_acquire);
+					if (prior == current)
+						break;
+					prior = current;
+				}
+				uint8_t hint = (uint8_t)hash;
+				hash >>= 8;
+				size_t group_index = hash;
+				uint8_t i;
+				for (;; ++group_index)
+				{
+					group_index &= prior->group_mask;
+					group_type& group = prior->groups()[group_index];
+					i = group.find(key, hint);
+					MPMALLOC_LIKELY_IF(i != group_ctrl::GROUP_SIZE)
+					{
+						size_t value_index = group_index * 7 + i;
+						return &prior->values()[value_index];
+					}
+				}
+				if (map.load(std::memory_order_acquire) != prior)
 					break;
 			}
-			size_t value_index = group_index * 7 + i;
-			return &map->values()[value_index];
 		}
 
 		template <typename F>
-		void for_each(F& function)
+		void for_each(F&& function)
 		{
+			hazard_ptr::node* n = shared_ctx.acquire();
+			scoped_callback callback = [&]
+			{
+				n->release();
+			};
+			parallel_chunk_map_shard_header* prior = map.load(std::memory_order_acquire);
+			for (;; MPMALLOC_SPIN_WAIT)
+			{
+				if (prior == nullptr)
+					return;
+				n->protect(prior);
+				parallel_chunk_map_shard_header* current = map.load(std::memory_order_acquire);
+				if (prior == current)
+					break;
+				prior = current;
+			}
+			prior->for_each(function);
 		}
 
 		template <typename F>
-		void for_each_value(F& function)
+		void for_each_value(F&& function)
 		{
+			hazard_ptr::node* n = shared_ctx.acquire();
+			scoped_callback callback = [&]
+			{
+				n->release();
+			};
+			parallel_chunk_map_shard_header* prior = map.load(std::memory_order_acquire);
+			for (;; MPMALLOC_SPIN_WAIT)
+			{
+				if (prior == nullptr)
+					return;
+				n->protect(prior);
+				parallel_chunk_map_shard_header* current = map.load(std::memory_order_acquire);
+				if (prior == current)
+					break;
+				prior = current;
+			}
+			prior->for_each_value(function);
 		}
 	};
 
 	template <typename T>
-	struct parallel_ptr_map
+	struct parallel_chunk_map
 	{
-		parallel_ptr_map_shard<T> shards[256];
-
-		MPMALLOC_INLINE_ALWAYS size_t hash(size_t key) const
-		{
-#ifdef MPMALLOC_DEBUG
-			key ^= (size_t)&shards[7];
-#endif
-			key ^= key >> 32;
-			key *= 0xd6e8feb86659fd93ULL;
-			key ^= key >> 32;
-			key *= 0xd6e8feb86659fd93ULL;
-			key ^= key >> 32;
-			return key;
-		}
+		parallel_chunk_map_shard<T> shards[256];
 
 		MPMALLOC_INLINE_ALWAYS T* find_or_insert(size_t key)
 		{
-			key >>= params::chunk_size_log2;
-			size_t h = hash(key);
-			return shards[(uint8_t)h].find_or_insert(key, h >> 8);
+			size_t hash_seed = parallel_chunk_map_shard<T>::get_hash_seed();
+			size_t hash = hash_chunk_ptr(key, hash_seed);
+			return shards[(uint8_t)hash].find_or_insert(key, hash >> 8);
 		}
 
 		MPMALLOC_INLINE_ALWAYS T* find(size_t key)
 		{
-			key >>= params::chunk_size_log2;
-			size_t h = hash(key);
-			return shards[(uint8_t)h].find(key, h >> 8);
+			size_t hash_seed = parallel_chunk_map_shard<T>::get_hash_seed();
+			size_t hash = hash_chunk_ptr(key, hash_seed);
+			return shards[(uint8_t)hash].find(key, hash >> 8);
 		}
 
 		template <typename F>
 		MPMALLOC_INLINE_ALWAYS void map(F&& function)
 		{
-			for (parallel_ptr_map_shard<T>& shard : shards)
+			for (parallel_chunk_map_shard<T>& shard : shards)
 				shard.for_each_value(function);
 		}
 	};
@@ -1179,7 +1397,7 @@ namespace mpmalloc
 #else
 		MPMALLOC_SHARED_ATTR static shared_chunk_list single_chunk_bin;
 
-		static parallel_ptr_map<shared_chunk_list> lookup;
+		static parallel_chunk_map<shared_chunk_list> lookup;
 
 		MPMALLOC_ATTR void MPMALLOC_CALL init()
 		{
@@ -1353,7 +1571,7 @@ namespace mpmalloc
 #ifndef MPMALLOC_64BIT
 		static shared_block_allocator* lookup;
 #else
-		static parallel_ptr_map<shared_block_allocator> lookup;
+		static parallel_chunk_map<shared_block_allocator> lookup;
 #endif
 		static shared_allocator_list* bins;
 		static shared_block_allocator_recover_list* recovered;
