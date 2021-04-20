@@ -99,7 +99,7 @@ namespace mpmalloc
 	[[nodiscard]] MPMALLOC_ATTR void* MPMALLOC_CALL reallocate(void* ptr, size_t old_size, size_t new_size);
 	MPMALLOC_ATTR void MPMALLOC_CALL deallocate(void* ptr, size_t size);
 	MPMALLOC_ATTR size_t MPMALLOC_CALL block_size_of(size_t size);
-	MPMALLOC_ATTR size_t MPMALLOC_CALL trim();
+	MPMALLOC_ATTR size_t MPMALLOC_CALL trim(size_t desired_size = SIZE_MAX);
 	MPMALLOC_ATTR size_t MPMALLOC_CALL purge();
 
 	MPMALLOC_ATTR backend_options MPMALLOC_CALL default_backend();
@@ -1055,6 +1055,11 @@ namespace mpmalloc
 				return r;
 			}
 
+			void destroy()
+			{
+				backend::deallocate(this, buffer_size(group_mask + 1));
+			}
+
 			static bool is_valid_load_factor(size_t used_count, size_t capacity)
 			{
 				return used_count >= (((capacity * group_ctrl::GROUP_SIZE) * MPMALLOC_MAX_LOAD_FACTOR_NUMERATOR) / MPMALLOC_MAX_LOAD_FACTOR_DENOMINATOR);
@@ -1099,11 +1104,41 @@ namespace mpmalloc
 			template <typename F>
 			void for_each(F&& function)
 			{
+				MPMALLOC_INVARIANT(this != nullptr);
+				size_t remaining = used_count.load(std::memory_order_acquire);
+				size_t done = 0;
+				for (size_t i = 0; i != group_mask + 1; ++i)
+				{
+					uint8_t n = groups()[i].ctrl.load(std::memory_order_acquire).count;
+					for (uint8_t j = 0; j != n; ++j)
+					{
+						function(groups()[i].keys[j].load(std::memory_order_acquire), values()[i * 7 + j]);
+						++done;
+						if (done == remaining)
+							return;
+					}
+				}
 			}
 
 			template <typename F>
-			void for_each_value(F&& function)
+			bool for_each_with_break(F&& function)
 			{
+				MPMALLOC_INVARIANT(this != nullptr);
+				size_t remaining = used_count.load(std::memory_order_acquire);
+				size_t done = 0;
+				for (size_t i = 0; i != group_mask + 1; ++i)
+				{
+					uint8_t n = groups()[i].ctrl.load(std::memory_order_acquire).count;
+					for (uint8_t j = 0; j != n; ++j)
+					{
+						if (function(groups()[i].keys[j].load(std::memory_order_acquire), values()[i * 7 + j]))
+							return true;
+						++done;
+						if (done == remaining)
+							return false;
+					}
+				}
+				return false;
 			}
 		};
 
@@ -1117,53 +1152,64 @@ namespace mpmalloc
 			return 0;
 		}
 
+		MPMALLOC_INLINE_NEVER parallel_chunk_map_shard_header* init(hazard_ptr::node* n)
+		{
+			parallel_chunk_map_shard_header* prior;
+			parallel_chunk_map_shard_header* new_map;
+			parallel_chunk_map_shard_header* current;
+			size_t group_count = parallel_chunk_map_shard_header::min_group_count();
+			prior = map.load(std::memory_order_acquire);
+			for (; prior != nullptr; MPMALLOC_SPIN_WAIT)
+			{
+				n->protect(prior);
+				current = map.load(std::memory_order_acquire);
+				if (current == prior)
+					return prior;
+				prior = current;
+			}
+			new_map = parallel_chunk_map_shard_header::allocate(group_count);
+			n->protect(new_map);
+			if (map.compare_exchange_strong(prior, new_map, std::memory_order_release, std::memory_order_relaxed))
+				return new_map;
+			new_map->destroy();
+			for (;; MPMALLOC_SPIN_WAIT)
+			{
+				n->protect(prior);
+				current = map.load(std::memory_order_acquire);
+				if (current == prior)
+					return prior;
+				prior = current;
+			}
+		}
+
 		MPMALLOC_INLINE_NEVER parallel_chunk_map_shard_header* expand(parallel_chunk_map_shard_header* prior, hazard_ptr::node* n)
 		{
+			if (prior == nullptr)
+				return init(n);
 			parallel_chunk_map_shard_header* new_map;
-			size_t new_group_count = 0;
-			while (true)
+			parallel_chunk_map_shard_header* current;
+			size_t group_count = parallel_chunk_map_shard_header::min_group_count();
+			prior = map.load(std::memory_order_acquire);
+			for (; prior != nullptr; MPMALLOC_SPIN_WAIT)
 			{
-				if (prior == nullptr)
-				{
-					new_group_count = parallel_chunk_map_shard_header::min_group_count();
-				}
-				else
-				{
-					new_group_count = ((prior->group_mask + 1) * 2);
-				}
-
-				parallel_chunk_map_shard_header* current = map.load(std::memory_order_acquire);
-				if (prior != current)
-				{
-					for (;; MPMALLOC_SPIN_WAIT)
-					{
-						prior = current;
-						n->protect(prior);
-						current = map.load(std::memory_order_acquire);
-						if (prior == current)
-							break;
-					}
-					if (prior != nullptr && !prior->should_expand())
-						return prior;
-				}
-
-				new_map = parallel_chunk_map_shard_header::allocate(new_group_count);
-				prior->for_each([&](size_t key, T& value)
-				{
-					size_t hash = hash_chunk_ptr(key, get_hash_seed());
-					T* target = prior->exclusive_insert(key, hash);
-				});
-				n->protect(new_map);
-
-				if (prior != nullptr)
-				{
-					local_hp_ctx.retire(shared_ctx, prior, [](void* ptr)
-					{
-						parallel_chunk_map_shard_header* m = (parallel_chunk_map_shard_header*)ptr;
-						backend::deallocate(m, parallel_chunk_map_shard_header::buffer_size(m->group_mask + 1));
-					});
-				}
+				n->protect(prior);
+				current = map.load(std::memory_order_acquire);
+				if (current == prior)
+					return prior;
+				prior = current;
+			}
+			new_map = parallel_chunk_map_shard_header::allocate(group_count);
+			n->protect(new_map);
+			if (map.compare_exchange_strong(prior, new_map, std::memory_order_release, std::memory_order_relaxed))
 				return new_map;
+			new_map->destroy();
+			for (;; MPMALLOC_SPIN_WAIT)
+			{
+				n->protect(prior);
+				current = map.load(std::memory_order_acquire);
+				if (current == prior)
+					return prior;
+				prior = current;
 			}
 		}
 
@@ -1273,7 +1319,7 @@ namespace mpmalloc
 		}
 
 		template <typename F>
-		void for_each_value(F&& function)
+		bool for_each_with_break(F&& function)
 		{
 			hazard_ptr::node* n = shared_ctx.acquire();
 			scoped_callback callback = [&]
@@ -1284,14 +1330,14 @@ namespace mpmalloc
 			for (;; MPMALLOC_SPIN_WAIT)
 			{
 				if (prior == nullptr)
-					return;
+					return false;
 				n->protect(prior);
 				parallel_chunk_map_shard_header* current = map.load(std::memory_order_acquire);
 				if (prior == current)
 					break;
 				prior = current;
 			}
-			prior->for_each_value(function);
+			return prior->for_each_with_break(function);
 		}
 	};
 
@@ -1315,10 +1361,19 @@ namespace mpmalloc
 		}
 
 		template <typename F>
-		MPMALLOC_INLINE_ALWAYS void map(F&& function)
+		void for_each(F&& function)
 		{
-			for (parallel_chunk_map_shard<T>& shard : shards)
-				shard.for_each_value(function);
+			for (parallel_chunk_map_shard<T>& e : shards)
+				e.for_each(function);
+		}
+
+		template <typename F>
+		bool for_each_with_break(F&& function)
+		{
+			for (parallel_chunk_map_shard<T>& e : shards)
+				if (e.for_each_with_break(function))
+					return true;
+			return false;
 		}
 	};
 #endif
@@ -1386,13 +1441,13 @@ namespace mpmalloc
 		}
 
 		template <typename F>
-		MPMALLOC_INLINE_ALWAYS void for_each_bin(F&& function)
+		MPMALLOC_INLINE_ALWAYS void for_each(F&& function)
 		{
 			size_t i = min_bin.load(std::memory_order_acquire);
 			MPMALLOC_UNLIKELY_IF(i == UINT32_MAX)
 				return;
 			for (; i != max_bin.load(std::memory_order_acquire); ++i)
-				function(bins[i], i);
+				function(i, bins[i]);
 		}
 #else
 		MPMALLOC_SHARED_ATTR static shared_chunk_list single_chunk_bin;
@@ -1437,9 +1492,15 @@ namespace mpmalloc
 		}
 
 		template <typename F>
-		MPMALLOC_INLINE_ALWAYS void for_each_bin(F&& function)
+		MPMALLOC_INLINE_ALWAYS void for_each(F&& function)
 		{
-			lookup.map(std::forward<F>(function));
+			lookup.for_each(std::forward<F>(function));
+		}
+
+		template <typename F>
+		MPMALLOC_INLINE_ALWAYS bool for_each_with_break(F&& function)
+		{
+			return lookup.for_each_with_break(std::forward<F>(function));
 		}
 #endif
 	}
@@ -2024,10 +2085,10 @@ namespace mpmalloc
 			return large_cache::block_size_of(size);
 	}
 
-	MPMALLOC_ATTR size_t MPMALLOC_CALL trim()
+	MPMALLOC_INLINE_NEVER static size_t trim_all()
 	{
 		size_t freed_bytes = 0;
-		large_cache::for_each_bin([&](shared_chunk_list& bin, size_t bin_index)
+		large_cache::for_each([&](size_t bin_index, shared_chunk_list& bin)
 		{
 			size_t size = (bin_index + 1) << params::chunk_size_log2;
 			size_t count = 0;
@@ -2039,6 +2100,28 @@ namespace mpmalloc
 				backend::deallocate(n, size);
 			}
 			freed_bytes += count * size;
+		});
+		return freed_bytes;
+	}
+
+	MPMALLOC_ATTR size_t MPMALLOC_CALL trim(size_t desired_size)
+	{
+		size_t freed_bytes = 0;
+		if (desired_size == SIZE_MAX)
+			return trim_all();
+		large_cache::for_each_with_break([&](size_t bin_index, shared_chunk_list& bin)
+		{
+			size_t size = (bin_index + 1) << params::chunk_size_log2;
+			size_t count = 0;
+			free_list_node* next;
+			for (free_list_node* n = bin.pop_all(); n != nullptr; n = next)
+			{
+				++count;
+				next = n->next;
+				backend::deallocate(n, size);
+			}
+			freed_bytes += count * size;
+			return freed_bytes >= desired_size;
 		});
 		return freed_bytes;
 	}
