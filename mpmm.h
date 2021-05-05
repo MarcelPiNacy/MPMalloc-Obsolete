@@ -39,7 +39,8 @@
 #ifndef MPMM_NODISCARD
 #define MPMM_NODISCARD
 #ifdef __cplusplus
-#if __has_attribute(nodiscard)
+#if __cplusplus >= 201703L
+#undef MPMM_NODISCARD
 #define MPMM_NODISCARD [[nodiscard]]
 #endif
 #endif
@@ -60,6 +61,12 @@ typedef enum mpmm_malloc_flags
 {
 	MPMM_ENABLE_FALLBACK = 1,
 } mpmm_malloc_flags;
+
+typedef enum mpmm_flush_type
+{
+	MPMM_FLUSH_FULL,
+	MPMM_FLUSH_EXPONENTIAL,
+} mpmm_flush_type;
 
 typedef void(MPMM_PTR* mpmm_fn_init)();
 typedef void(MPMM_PTR* mpmm_fn_cleanup)();
@@ -99,7 +106,6 @@ typedef struct mpmm_mem_stats
 
 typedef struct mpmm_trim_options
 {
-	uint64_t flags;
 	size_t trim_limit;
 } mpmm_trim_options;
 
@@ -111,58 +117,59 @@ typedef struct mpmm_debugger_options
 	mpmm_fn_debugger_error error;
 } mpmm_debugger_options;
 
-MPMM_ATTR void		MPMM_CALL mpmm_init_info_default(mpmm_init_options* out_options);
-MPMM_ATTR void		MPMM_CALL mpmm_trim_options_default(mpmm_trim_options* out_options);
-MPMM_ATTR void		MPMM_CALL mpmm_debugger_options_default(mpmm_debugger_options* out_options);
+typedef struct mpmm_global_params
+{
+	size_t page_size;
+	size_t chunk_size;
+	size_t max_concurrency;
+} mpmm_global_params;
 
-MPMM_ATTR size_t	MPMM_CALL mpmm_backend_required_alignment();
+MPMM_ATTR void					MPMM_CALL mpmm_init_info_default(mpmm_init_options* out_options);
+MPMM_ATTR void					MPMM_CALL mpmm_trim_options_default(mpmm_trim_options* out_options);
+MPMM_ATTR void					MPMM_CALL mpmm_debugger_options_default(mpmm_debugger_options* out_options);
 
-MPMM_ATTR void		MPMM_CALL mpmm_init(const mpmm_init_options* options);
-MPMM_ATTR void		MPMM_CALL mpmm_reset();
+MPMM_ATTR void					MPMM_CALL mpmm_init(const mpmm_init_options* options);
+MPMM_ATTR mpmm_bool				MPMM_CALL mpmm_is_initialized();
+MPMM_ATTR void					MPMM_CALL mpmm_reset();
 
-MPMM_ATTR void		MPMM_CALL mpmm_stats(mpmm_mem_stats* out_stats);
+MPMM_ATTR void					MPMM_CALL mpmm_stats(mpmm_mem_stats* out_stats);
+MPMM_ATTR void					MPMM_CALL mpmm_params(mpmm_global_params* out_params);
 
-MPMM_ATTR void*		MPMM_CALL mpmm_malloc(size_t size);
-MPMM_ATTR mpmm_bool	MPMM_CALL mpmm_resize(void* ptr, size_t old_size, size_t new_size);
-MPMM_ATTR void*		MPMM_CALL mpmm_realloc(void* ptr, size_t old_size, size_t new_size);
-MPMM_ATTR void		MPMM_CALL mpmm_free(void* ptr, size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_round_size(size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_purge();
-MPMM_ATTR size_t	MPMM_CALL mpmm_trim(const mpmm_trim_options* options);
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_malloc(size_t size);
+MPMM_ATTR mpmm_bool				MPMM_CALL mpmm_resize(void* ptr, size_t old_size, size_t new_size);
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_realloc(void* ptr, size_t old_size, size_t new_size);
+MPMM_ATTR void					MPMM_CALL mpmm_free(void* ptr, size_t size);
+MPMM_ATTR size_t				MPMM_CALL mpmm_round_size(size_t size);
+MPMM_ATTR size_t				MPMM_CALL mpmm_purge(uint64_t flags, void* param);
+MPMM_ATTR size_t				MPMM_CALL mpmm_trim(const mpmm_trim_options* options);
 
-MPMM_ATTR void*		MPMM_CALL mpmm_tcache_malloc(size_t size, uint64_t flags);
-MPMM_ATTR void		MPMM_CALL mpmm_tcache_free(void* ptr, size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_tcache_round_size(size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_tcache_flush();
-MPMM_ATTR size_t	MPMM_CALL mpmm_tcache_min_malloc_size();
-MPMM_ATTR size_t	MPMM_CALL mpmm_tcache_max_malloc_size();
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_tcache_malloc(size_t size, uint64_t flags);
+MPMM_ATTR void					MPMM_CALL mpmm_tcache_free(void* ptr, size_t size);
+MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_round_size(size_t size);
+MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_flush(uint64_t flags, void* param);
+MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_min_size();
+MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_max_size();
 
-MPMM_ATTR void*		MPMM_CALL mpmm_scache_malloc(size_t size, uint64_t flags);
-MPMM_ATTR void		MPMM_CALL mpmm_scache_free(void* ptr, size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_scache_round_size(size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_scache_flush();
-MPMM_ATTR size_t	MPMM_CALL mpmm_scache_min_malloc_size();
-MPMM_ATTR size_t	MPMM_CALL mpmm_scache_max_malloc_size();
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_lcache_malloc(size_t size, uint64_t flags);
+MPMM_ATTR void					MPMM_CALL mpmm_lcache_free(void* ptr, size_t size);
+MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_round_size(size_t size);
+MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_flush(uint64_t flags, void* param);
+MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_min_size();
+MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_max_size();
 
-MPMM_ATTR void*		MPMM_CALL mpmm_lcache_malloc(size_t size, uint64_t flags);
-MPMM_ATTR void		MPMM_CALL mpmm_lcache_free(void* ptr, size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_lcache_round_size(size_t size);
-MPMM_ATTR size_t	MPMM_CALL mpmm_lcache_flush();
-MPMM_ATTR size_t	MPMM_CALL mpmm_lcache_min_malloc_size();
-MPMM_ATTR size_t	MPMM_CALL mpmm_lcache_max_malloc_size();
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_persistent_malloc(size_t size);
 
-MPMM_ATTR void*		MPMM_CALL mpmm_persistent_malloc(size_t size);
-MPMM_ATTR void		MPMM_CALL mpmm_persistent_reset();
+MPMM_ATTR size_t				MPMM_CALL mpmm_backend_required_alignment();
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_backend_malloc(size_t size);
+MPMM_ATTR mpmm_bool				MPMM_CALL mpmm_backend_resize(void* ptr, size_t old_size, size_t new_size);
+MPMM_ATTR void					MPMM_CALL mpmm_backend_free(void* ptr, size_t size);
+MPMM_ATTR void					MPMM_CALL mpmm_backend_purge(void* ptr, size_t size);
 
-MPMM_ATTR void*		MPMM_CALL mpmm_backend_malloc(size_t size);
-MPMM_ATTR mpmm_bool	MPMM_CALL mpmm_backend_resize(void* ptr, size_t old_size, size_t new_size);
-MPMM_ATTR void		MPMM_CALL mpmm_backend_free(void* ptr, size_t size);
-
-MPMM_ATTR void		MPMM_CALL mpmm_debugger_init(const mpmm_debugger_options* options);
-MPMM_ATTR mpmm_bool	MPMM_CALL mpmm_debugger_enabled();
-MPMM_ATTR void		MPMM_CALL mpmm_debugger_message(const char* message, size_t size);
-MPMM_ATTR void		MPMM_CALL mpmm_debugger_warning(const char* message, size_t size);
-MPMM_ATTR void		MPMM_CALL mpmm_debugger_error(const char* message, size_t size);
+MPMM_ATTR void					MPMM_CALL mpmm_debugger_init(const mpmm_debugger_options* options);
+MPMM_ATTR mpmm_bool				MPMM_CALL mpmm_debugger_enabled();
+MPMM_ATTR void					MPMM_CALL mpmm_debugger_message(const char* message, size_t size);
+MPMM_ATTR void					MPMM_CALL mpmm_debugger_warning(const char* message, size_t size);
+MPMM_ATTR void					MPMM_CALL mpmm_debugger_error(const char* message, size_t size);
 MPMM_EXTERN_C_END
 
 
@@ -190,7 +197,6 @@ namespace mpmm
 		~debugger_options() = default;
 	};
 
-	MPMM_ATTR size_t		MPMM_CALL backend_required_alignment() noexcept { return mpmm_backend_required_alignment(); }
 	MPMM_ATTR void			MPMM_CALL init(const mpmm_init_options* options) noexcept { return mpmm_init(options); }
 	MPMM_ATTR void			MPMM_CALL reset() noexcept { mpmm_reset(); }
 	MPMM_ATTR memory_stats	MPMM_CALL stats() noexcept { mpmm_mem_stats r; mpmm_stats(&r); return r; }
@@ -199,7 +205,7 @@ namespace mpmm
 	MPMM_ATTR void*			MPMM_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mpmm_realloc(ptr, old_size, new_size); }
 	MPMM_ATTR void			MPMM_CALL free(void* ptr, size_t size) noexcept { mpmm_free(ptr, size); }
 	MPMM_ATTR size_t		MPMM_CALL round_size(size_t size) noexcept { return mpmm_round_size(size); }
-	MPMM_ATTR size_t		MPMM_CALL purge() noexcept { return mpmm_purge(); }
+	MPMM_ATTR size_t		MPMM_CALL purge(uint64_t flags, void* param) noexcept { return mpmm_purge(flags, param); }
 	MPMM_ATTR size_t		MPMM_CALL trim(const trim_options* options) noexcept { return mpmm_trim((const mpmm_trim_options*)options); }
 
 	namespace thread_cache
@@ -207,19 +213,9 @@ namespace mpmm
 		MPMM_ATTR void*		MPMM_CALL malloc(size_t size, uint64_t flags) noexcept { return mpmm_tcache_malloc(size, flags); }
 		MPMM_ATTR void		MPMM_CALL free(void* ptr, size_t size) noexcept { mpmm_tcache_free(ptr, size); }
 		MPMM_ATTR size_t	MPMM_CALL round_size(size_t size) noexcept { return mpmm_tcache_round_size(size); }
-		MPMM_ATTR size_t	MPMM_CALL flush() noexcept { return mpmm_tcache_flush(); }
-		MPMM_ATTR size_t	MPMM_CALL min_malloc_size() noexcept { return mpmm_tcache_min_malloc_size(); }
-		MPMM_ATTR size_t	MPMM_CALL max_malloc_size() noexcept { return mpmm_tcache_max_malloc_size(); }
-	}
-
-	namespace shared_cache
-	{
-		MPMM_ATTR void*		MPMM_CALL malloc(size_t size, uint64_t flags) noexcept { return mpmm_scache_malloc(size, flags); }
-		MPMM_ATTR void		MPMM_CALL free(void* ptr, size_t size) noexcept { mpmm_scache_free(ptr, size); }
-		MPMM_ATTR size_t	MPMM_CALL round_size(size_t size) noexcept { return mpmm_scache_round_size(size); }
-		MPMM_ATTR size_t	MPMM_CALL flush() noexcept { return mpmm_scache_flush(); }
-		MPMM_ATTR size_t	MPMM_CALL min_malloc_size() noexcept { return mpmm_scache_min_malloc_size(); }
-		MPMM_ATTR size_t	MPMM_CALL max_malloc_size() noexcept { return mpmm_scache_max_malloc_size(); }
+		MPMM_ATTR size_t	MPMM_CALL flush(uint64_t flags, void* param) noexcept { return mpmm_tcache_flush(flags, param); }
+		MPMM_ATTR size_t	MPMM_CALL min_size() noexcept { return mpmm_tcache_min_size(); }
+		MPMM_ATTR size_t	MPMM_CALL max_size() noexcept { return mpmm_tcache_max_size(); }
 	}
 
 	namespace large_cache
@@ -227,22 +223,23 @@ namespace mpmm
 		MPMM_ATTR void*		MPMM_CALL malloc(size_t size, uint64_t flags) noexcept { return mpmm_lcache_malloc(size, flags); }
 		MPMM_ATTR void		MPMM_CALL free(void* ptr, size_t size) noexcept { mpmm_lcache_free(ptr, size); }
 		MPMM_ATTR size_t	MPMM_CALL round_size(size_t size) noexcept { return mpmm_lcache_round_size(size); }
-		MPMM_ATTR size_t	MPMM_CALL flush() noexcept { return mpmm_lcache_flush(); }
-		MPMM_ATTR size_t	MPMM_CALL min_malloc_size() noexcept { return mpmm_lcache_min_malloc_size(); }
-		MPMM_ATTR size_t	MPMM_CALL max_malloc_size() noexcept { return mpmm_lcache_max_malloc_size(); }
+		MPMM_ATTR size_t	MPMM_CALL flush(uint64_t flags, void* param) noexcept { return mpmm_lcache_flush(flags, param); }
+		MPMM_ATTR size_t	MPMM_CALL min_size() noexcept { return mpmm_lcache_min_size(); }
+		MPMM_ATTR size_t	MPMM_CALL max_size() noexcept { return mpmm_lcache_max_size(); }
 	}
 
 	namespace persistent
 	{
 		MPMM_ATTR void*		MPMM_CALL malloc(size_t size) noexcept { return mpmm_persistent_malloc(size); }
-		MPMM_ATTR void		MPMM_CALL reset() noexcept { mpmm_persistent_reset(); }
 	}
 
 	namespace backend
 	{
+		MPMM_ATTR size_t	MPMM_CALL required_alignment() noexcept { return mpmm_backend_required_alignment(); }
 		MPMM_ATTR void*		MPMM_CALL malloc(size_t size) noexcept { return mpmm_backend_malloc(size); }
 		MPMM_ATTR bool		MPMM_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mpmm_backend_resize(ptr, old_size, new_size); }
 		MPMM_ATTR void		MPMM_CALL free(void* ptr, size_t size) noexcept { return mpmm_backend_free(ptr, size); }
+		MPMM_ATTR void		MPMM_CALL purge(void* ptr, size_t size) noexcept { return mpmm_backend_free(ptr, size); }
 	}
 
 	namespace debugger
@@ -273,8 +270,14 @@ namespace mpmm
 #define MPMM_DEBUG
 #endif
 
-#if !defined(MPMM_JUNK_VALUE) && !defined(MPMM_NO_JUNK)
+#ifndef MPMM_JUNK_VALUE
 #define MPMM_JUNK_VALUE 0xcd
+#endif
+
+#ifdef MPMM_DEBUG
+#define MPMM_DEBUG_JUNK_FILL(P, K) MPMM_UNLIKELY_IF((P) != NULL) (void)memset((P), MPMM_JUNK_VALUE, (K))
+#else
+#define MPMM_DEBUG_JUNK_FILL(P, K)
 #endif
 
 #define MPMM_ALIGN_FLOOR(VALUE, ALIGNMENT) ((VALUE) & ~((ALIGNMENT) - 1))
@@ -347,8 +350,8 @@ namespace mpmm
 
 #define MPMM_LOG2_32(VALUE) (31 - MPMM_CLZ32(VALUE))
 #define MPMM_LOG2_64(VALUE) (63 - MPMM_CLZ64(VALUE))
-#define MPMM_POW2_ROUND32(VALUE) ((size_t)1U << (MPMM_LOG2_32(VALUE) + 1U))
-#define MPMM_POW2_ROUND64(VALUE) ((size_t)1ULL << (MPMM_LOG2_64(VALUE) + 1ULL))
+#define MPMM_POW2_ROUND32(VALUE) (1U << (32 - MPMM_CLZ32((VALUE) - 1U)))
+#define MPMM_POW2_ROUND64(VALUE) (1ULL << (64 - MPMM_CLZ64((VALUE) - 1ULL)))
 
 #ifdef MPMM_32BIT
 #define MPMM_POPCNT(MASK) MPMM_POPCNT32((MASK))
@@ -387,7 +390,6 @@ namespace mpmm
 #define MPMM_BLOCK_ALLOCATOR_MASK_COUNT (MPMM_BLOCK_ALLOCATOR_MAX_CAPACITY / (8 * sizeof(mpmm_mask_type)))
 
 #define MPMM_SHARED_ATTR _Alignas(MPMM_CACHE_LINE_SIZE)
-#define MPMM_DECLARE_CACHE_ALIGNED(TYPE) typedef struct TYPE##_cache_aligned { MPMM_SHARED_ATTR TYPE value; } TYPE##_cache_aligned;
 
 #ifdef MPMM_DEBUG
 #define MPMM_EMMIT_MESSAGE(MESSAGE) mpmm_debugger_message((MESSAGE), (sizeof((MESSAGE)) / sizeof((MESSAGE)[0])) - 1)
@@ -449,6 +451,7 @@ static const uint_fast8_t MPMM_SIZE_CLASS_LOOKUP_SIZES[] = { 1, 1, 1, 1, 1, 1, 1
 static const uint_fast8_t MPMM_SIZE_CLASS_LOOKUP_OFFSETS[] = { 0, 1, 2, 3, 4, 5, 6, 7, 15, 25, 34, 43 };
 
 #define MPMM_SIZE_CLASS_LOOKUP_SIZE MPMM_ARRAY_SIZE(MPMM_SIZE_CLASS_LOOKUP)
+#define MPMM_SMALL_SIZE_CLASS_COUNT MPMM_ARRAY_SIZE(MPMM_SMALL_SIZE_CLASSES)
 
 #ifdef MPMM_32BIT
 typedef uint32_t mpmm_mask_type;
@@ -466,9 +469,9 @@ static size_t page_size;
 static size_t chunk_size;
 static size_t chunk_size_mask;
 static size_t vas_granularity;
+static uint32_t size_class_count;
 static uint8_t page_size_log2;
 static uint8_t chunk_size_log2;
-static uint8_t size_class_count;
 #ifdef MPMM_DEBUG
 static mpmm_debugger_options debugger;
 #endif
@@ -632,28 +635,27 @@ MPMM_INLINE_ALWAYS static void* mpmm_chunk_list_pop(mpmm_chunk_list* head)
 
 typedef struct mpmm_block_allocator
 {
-	struct mpmm_block_allocator* next;
+	alignas(MPMM_CACHE_LINE_SIZE) struct mpmm_block_allocator* next;
 	mpmm_rlist* recovered;
 	struct mpmm_tcache* owner;
 	uint8_t* buffer;
 	uint32_t free_count;
-	uint32_t block_size;
-	uint32_t capacity;
+	uint8_t block_size_log2;
 	mpmm_atomic_bool unlinked;
-	mpmm_atomic_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT / 2];
+	alignas(MPMM_CACHE_LINE_SIZE) mpmm_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
+	alignas(MPMM_CACHE_LINE_SIZE) mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
 } mpmm_block_allocator;
 
 typedef struct mpmm_intrusive_block_allocator
 {
-	struct mpmm_intrusive_block_allocator* next;
+	alignas(MPMM_CACHE_LINE_SIZE) struct mpmm_intrusive_block_allocator* next;
 	mpmm_rlist* recovered;
 	struct mpmm_tcache* owner;
 	uint32_t free_count;
 	uint32_t block_size;
-	uint32_t capacity;
 	mpmm_atomic_bool unlinked;
-	mpmm_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
-	mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
+	alignas(MPMM_CACHE_LINE_SIZE) mpmm_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
+	alignas(MPMM_CACHE_LINE_SIZE) mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
 } mpmm_intrusive_block_allocator;
 
 MPMM_INLINE_ALWAYS static size_t mpmm_chunk_size_of(size_t size)
@@ -679,9 +681,24 @@ MPMM_INLINE_ALWAYS static mpmm_bool mpmm_block_allocator_owns(void* buffer, void
 	uint_fast32_t index = mpmm_block_allocator_index_of(buffer, block_size, ptr);
 	uint_fast32_t mask_index = index >> MPMM_BLOCK_MASK_BIT_SIZE_LOG2;
 	uint_fast32_t bit_index = index & MPMM_BLOCK_MASK_MOD_MASK;
-	return MPMM_BT(free_map[mask_index], bit_index);
+	return !MPMM_BT(free_map[mask_index], bit_index);
 }
 #endif
+
+MPMM_INLINE_ALWAYS static void mpmm_block_allocator_init(mpmm_block_allocator* self, uint_fast8_t block_size_log2, size_t chunk_size, mpmm_rlist* recovered, struct mpmm_tcache* owner, void* buffer)
+{
+	MPMM_INVARIANT(chunk_size_log2 > block_size_log2);
+	MPMM_INVARIANT(self != NULL);
+	self->next = NULL;
+	self->recovered = recovered;
+	self->free_count = 1U << (chunk_size_log2 - block_size_log2);
+	self->block_size_log2 = block_size_log2;
+	self->owner = owner;
+	self->buffer = (uint8_t*)buffer;
+	self->unlinked = 0;
+	(void)memset(self->free_map, 0xff, sizeof(self->free_map));
+	(void)memset(self->marked_map, 0, sizeof(self->marked_map));
+}
 
 MPMM_INLINE_ALWAYS static void mpmm_intrusive_block_allocator_init(mpmm_intrusive_block_allocator* self, uint_fast32_t block_size, size_t chunk_size, mpmm_rlist* recovered, struct mpmm_tcache* owner)
 {
@@ -689,15 +706,15 @@ MPMM_INLINE_ALWAYS static void mpmm_intrusive_block_allocator_init(mpmm_intrusiv
 	self->next = NULL;
 	self->recovered = recovered;
 	uint_fast32_t reserved_count = (uint_fast32_t)MPMM_ALIGN_ROUND(sizeof(mpmm_intrusive_block_allocator), (size_t)block_size) / block_size;
-	self->free_count = self->capacity - reserved_count;
+	uint_fast32_t capacity = (uint_fast32_t)(chunk_size / block_size);
+	self->free_count = capacity - reserved_count;
 	self->block_size = block_size;
-	self->capacity = (uint_fast32_t)(chunk_size / block_size);
 	self->owner = owner;
 	self->unlinked = 0;
 	(void)memset(self->free_map, 0, sizeof(self->free_map));
 	(void)memset(self->marked_map, 0, sizeof(self->marked_map));
-	uint_fast32_t mask_count = self->capacity >> MPMM_BLOCK_MASK_BIT_SIZE_LOG2;
-	uint_fast32_t bit_count = self->capacity & MPMM_BLOCK_MASK_MOD_MASK;
+	uint_fast32_t mask_count = capacity >> MPMM_BLOCK_MASK_BIT_SIZE_LOG2;
+	uint_fast32_t bit_count = capacity & MPMM_BLOCK_MASK_MOD_MASK;
 	MPMM_LIKELY_IF(mask_count != 0)
 		(void)memset(self->free_map, 0xff, mask_count * sizeof(mpmm_mask_type));
 	MPMM_LIKELY_IF(bit_count != 0)
@@ -725,15 +742,35 @@ MPMM_INLINE_NEVER static uint_fast32_t mpmm_intrusive_block_allocator_reclaim(mp
 	return freed_count;
 }
 
-MPMM_INLINE_ALWAYS static void* mpmm_intrusive_block_allocator_malloc(mpmm_intrusive_block_allocator* self)
+MPMM_INLINE_ALWAYS static void* mpmm_block_allocator_malloc(mpmm_block_allocator* self)
 {
-	for (uint_fast32_t mask_index = 0; mask_index != MPMM_BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
+	uint_fast32_t mask_index, bit_index, offset;
+	for (mask_index = 0; mask_index != MPMM_BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
 	{
 		MPMM_UNLIKELY_IF(self->free_map[mask_index] == 0)
 			continue;
-		uint_fast8_t bit_index = MPMM_CTZ(self->free_map[mask_index]);
+		bit_index = MPMM_CTZ(self->free_map[mask_index]);
 		MPMM_BR(self->free_map[mask_index], bit_index);
-		uint_fast32_t offset = (mask_index << MPMM_BLOCK_MASK_BIT_SIZE_LOG2) | bit_index;
+		offset = (mask_index << MPMM_BLOCK_MASK_BIT_SIZE_LOG2) | bit_index;
+		offset <<= self->block_size_log2;
+		--self->free_count;
+		MPMM_UNLIKELY_IF(self->free_count == 0)
+			self->free_count += mpmm_intrusive_block_allocator_reclaim(self->free_map, self->marked_map, MPMM_BLOCK_ALLOCATOR_MASK_COUNT);
+		return self->buffer + offset;
+	}
+	MPMM_UNREACHABLE;
+}
+
+MPMM_INLINE_ALWAYS static void* mpmm_intrusive_block_allocator_malloc(mpmm_intrusive_block_allocator* self)
+{
+	uint_fast32_t mask_index, bit_index, offset;
+	for (mask_index = 0; mask_index != MPMM_BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
+	{
+		MPMM_UNLIKELY_IF(self->free_map[mask_index] == 0)
+			continue;
+		bit_index = MPMM_CTZ(self->free_map[mask_index]);
+		MPMM_BR(self->free_map[mask_index], bit_index);
+		offset = (mask_index << MPMM_BLOCK_MASK_BIT_SIZE_LOG2) | bit_index;
 		offset *= self->block_size;
 		--self->free_count;
 		MPMM_UNLIKELY_IF(self->free_count == 0)
@@ -745,10 +782,11 @@ MPMM_INLINE_ALWAYS static void* mpmm_intrusive_block_allocator_malloc(mpmm_intru
 
 MPMM_INLINE_NEVER static void mpmm_intrusive_block_allocator_recover(atomic_bool* unlinked, mpmm_rlist* recovered, void* self)
 {
+	mpmm_flist_node* desired;
 	mpmm_bool expected = 0;
 	MPMM_UNLIKELY_IF(atomic_compare_exchange_strong_explicit(unlinked, &expected, 0, memory_order_acquire, memory_order_relaxed))
 		return;
-	mpmm_flist_node* desired = (mpmm_flist_node*)self;
+	desired = (mpmm_flist_node*)self;
 	for (;; MPMM_SPIN_WAIT)
 	{
 		desired->next = atomic_load_explicit(recovered, memory_order_acquire);
@@ -759,20 +797,23 @@ MPMM_INLINE_NEVER static void mpmm_intrusive_block_allocator_recover(atomic_bool
 
 MPMM_INLINE_ALWAYS static void mpmm_intrusive_block_allocator_free(mpmm_intrusive_block_allocator* self, void* ptr)
 {
+	MPMM_INVARIANT(mpmm_block_allocator_owns(self, ptr, self->block_size, self->free_map));
+	uint_fast32_t index, mask_index, bit_index;
 	++self->free_count;
-	uint_fast32_t index = mpmm_block_allocator_index_of(self, self->block_size, ptr);
-	uint_fast32_t mask_index = index >> MPMM_BLOCK_MASK_BIT_SIZE_LOG2;
-	uint_fast32_t bit_index = index & MPMM_BLOCK_MASK_MOD_MASK;
+	index = mpmm_block_allocator_index_of(self, self->block_size, ptr);
+	mask_index = index >> MPMM_BLOCK_MASK_BIT_SIZE_LOG2;
+	bit_index = index & MPMM_BLOCK_MASK_MOD_MASK;
 	MPMM_BS(self->free_map[mask_index], bit_index);
 	MPMM_UNLIKELY_IF(atomic_load_explicit(&self->unlinked, memory_order_acquire))
 		mpmm_intrusive_block_allocator_recover(&self->unlinked, self->recovered, self);
 }
 
-MPMM_INLINE_ALWAYS static void mpmm_intrusive_block_allocator_shared_free(mpmm_intrusive_block_allocator* self, void* ptr)
+MPMM_INLINE_ALWAYS static void mpmm_intrusive_block_allocator_free_shared(mpmm_intrusive_block_allocator* self, void* ptr)
 {
-	uint_fast32_t index = mpmm_block_allocator_index_of(self, self->block_size, ptr);
-	uint_fast32_t mask_index = index >> MPMM_BLOCK_MASK_BIT_SIZE_LOG2;
-	uint_fast32_t bit_index = index & MPMM_BLOCK_MASK_MOD_MASK;
+	uint_fast32_t index, mask_index, bit_index;
+	index = mpmm_block_allocator_index_of(self, self->block_size, ptr);
+	mask_index = index >> MPMM_BLOCK_MASK_BIT_SIZE_LOG2;
+	bit_index = index & MPMM_BLOCK_MASK_MOD_MASK;
 	atomic_fetch_or_explicit(self->marked_map + mask_index, (mpmm_mask_type)1 << bit_index, memory_order_release);
 	MPMM_UNLIKELY_IF(atomic_load_explicit(&self->unlinked, memory_order_acquire))
 		mpmm_intrusive_block_allocator_recover(&self->unlinked, self->recovered, self);
@@ -784,6 +825,15 @@ MPMM_INLINE_ALWAYS static void* mpmm_intrusive_block_allocator_allocator_of(void
 	mask = MPMM_ALIGN_FLOOR(mask, chunk_size);
 	return (void*)mask;
 }
+
+// ================================================================
+//	STATS
+// ================================================================
+
+typedef struct mpmm_shared_counter { alignas(MPMM_CACHE_LINE_SIZE) atomic_size_t value; } mpmm_shared_counter;
+
+static mpmm_shared_counter used_memory;
+static mpmm_shared_counter total_memory;
 
 // ================================================================
 //	PERSISTENT
@@ -806,16 +856,19 @@ MPMM_INLINE_ALWAYS static void* mpmm_persistent_node_malloc(persistent_node* sel
 	return NULL;
 }
 
-static persistent_allocator persistent;
+static persistent_allocator persistent_state;
 
 MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc(size_t size)
 {
-	MPMM_UNLIKELY_IF(size >= chunk_size)
-		return backend_malloc(MPMM_ALIGN_ROUND(size, chunk_size));
 	void* r;
 	persistent_node* n;
 	persistent_node* prior;
-	persistent_node* current = atomic_load_explicit(&persistent, memory_order_acquire);
+	persistent_node* current;
+	size_t offset;
+
+	MPMM_UNLIKELY_IF(size >= chunk_size)
+		return backend_malloc(MPMM_ALIGN_ROUND(size, chunk_size));
+	current = atomic_load_explicit(&persistent_state, memory_order_acquire);
 	do
 	{
 		prior = current;
@@ -825,19 +878,19 @@ MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc(size_t size)
 			MPMM_LIKELY_IF(r != NULL)
 				return r;
 		}
-		current = atomic_load_explicit(&persistent, memory_order_acquire);
+		current = atomic_load_explicit(&persistent_state, memory_order_acquire);
 	} while (prior != current);
-	n = (persistent_node*)mpmm_lcache_malloc(chunk_size, 0);
+	n = (persistent_node*)mpmm_lcache_malloc(chunk_size, MPMM_ENABLE_FALLBACK);
 	MPMM_INVARIANT(n != NULL);
-	size_t offset = MPMM_ALIGN_ROUND(sizeof(persistent_node), MPMM_CACHE_LINE_SIZE);
+	offset = MPMM_ALIGN_ROUND(sizeof(persistent_node), MPMM_CACHE_LINE_SIZE);
 	r = (uint8_t*)n + offset;
 	offset += size;
 	n->bump = offset;
 	for (;; MPMM_SPIN_WAIT)
 	{
-		prior = atomic_load_explicit(&persistent, memory_order_acquire);
+		prior = atomic_load_explicit(&persistent_state, memory_order_acquire);
 		n->next = prior;
-		MPMM_LIKELY_IF(atomic_compare_exchange_weak_explicit(&persistent, &prior, n, memory_order_release, memory_order_relaxed))
+		MPMM_LIKELY_IF(atomic_compare_exchange_weak_explicit(&persistent_state, &prior, n, memory_order_release, memory_order_relaxed))
 			return r;
 	}
 }
@@ -845,7 +898,8 @@ MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc(size_t size)
 MPMM_ATTR void MPMM_CALL mpmm_persistent_reset()
 {
 	persistent_node* next;
-	for (persistent_node* n = atomic_exchange_explicit(&persistent, NULL, memory_order_acquire); n != NULL; n = next)
+	persistent_node* n;
+	for (n = atomic_exchange_explicit(&persistent_state, NULL, memory_order_acquire); n != NULL; n = next)
 	{
 		next = n->next;
 		backend_free(n, chunk_size);
@@ -867,6 +921,7 @@ MPMM_INLINE_ALWAYS static void mpmm_lcache_init()
 #ifdef MPMM_32BIT
 	lcache_bin_count = 1 << (32 - chunk_size_log2);
 	lcache_bins = (mpmm_chunk_list*)mpmm_persistent_malloc(lcache_bin_count * sizeof(mpmm_chunk_list));
+	MPMM_INVARIANT(lcache_bins != NULL);
 #else
 #endif
 }
@@ -891,52 +946,67 @@ MPMM_INLINE_ALWAYS static mpmm_chunk_list* mpmm_lcache_find_or_insert_bin(size_t
 }
 
 // ================================================================
-//	SHARED CACHE
+//	THREAD CACHE
 // ================================================================
 
-typedef _Atomic(void*) mpmm_scache_bin;
+typedef _Atomic(void*) atomic_ptr;
+typedef _Atomic(void*)mpmm_block_allocator_bin;
 
 #ifdef MPMM_32BIT
-static mpmm_block_allocator* scache_lookup;
+static mpmm_block_allocator* tcache_lookup;
 #else
 #endif
 
-static mpmm_chunk_list* scache_bins;
+MPMM_INLINE_ALWAYS static void mpmm_tcache_common_init()
+{
+	size_t k = 1 << (32 - chunk_size_log2);
+	tcache_lookup = (mpmm_block_allocator*)mpmm_persistent_malloc(sizeof(mpmm_block_allocator) * k);
+}
 
-MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_scache_find_allocator(void* buffer)
+typedef struct mpmm_tcache
+{
+	mpmm_intrusive_block_allocator** bins;
+	mpmm_rlist* recovered;
+	mpmm_block_allocator** bins_large;
+	mpmm_rlist* recovered_large;
+} mpmm_tcache;
+
+static _Thread_local mpmm_tcache this_thread_cache;
+
+MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_tcache_find_allocator(void* buffer)
 {
 	size_t id = mpmm_chunk_index_of(buffer);
 #ifdef MPMM_32BIT
-	return scache_lookup + id;
+	MPMM_INVARIANT(tcache_lookup != NULL);
+	return tcache_lookup + id;
 #else
 #endif
 }
 
-MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_scache_find_or_insert_allocator(void* buffer)
+MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_tcache_find_or_insert_allocator(void* buffer)
 {
 #ifdef MPMM_32BIT
-	return mpmm_scache_find_allocator(buffer);
+	return mpmm_tcache_find_allocator(buffer);
 #else
 #endif
 }
 
-MPMM_INLINE_ALWAYS static void mpmm_scache_bin_push(mpmm_scache_bin* head, mpmm_block_allocator* allocator)
+MPMM_INLINE_ALWAYS static void mpmm_tcache_bin_push(mpmm_block_allocator_bin* head, mpmm_block_allocator* allocator)
 {
 	void* desired = allocator->buffer;
 	mpmm_block_allocator* prior_allocator;
 	void* prior;
-
 	for (;; MPMM_SPIN_WAIT)
 	{
 		prior = atomic_load_explicit(head, memory_order_acquire);
-		prior_allocator = mpmm_scache_find_allocator(prior);
+		prior_allocator = mpmm_tcache_find_allocator(prior);
 		allocator->next = prior_allocator;
 		MPMM_LIKELY_IF(atomic_compare_exchange_weak_explicit(head, &prior, desired, memory_order_release, memory_order_relaxed))
 			break;
 	}
 }
 
-MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_scache_bin_pop(mpmm_scache_bin* head)
+MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_block_allocator_bin_pop(mpmm_block_allocator_bin* head)
 {
 	mpmm_block_allocator* r;
 	void* prior;
@@ -944,7 +1014,7 @@ MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_scache_bin_pop(mpmm_scache_
 	for (;; MPMM_SPIN_WAIT)
 	{
 		prior = atomic_load_explicit(head, memory_order_acquire);
-		r = mpmm_scache_find_allocator(prior);
+		r = mpmm_tcache_find_allocator(prior);
 		MPMM_UNLIKELY_IF(r == NULL)
 			break;
 		desired = r->next->buffer;
@@ -954,30 +1024,23 @@ MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_scache_bin_pop(mpmm_scache_
 	return r;
 }
 
-MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_scache_bin_peek(const mpmm_scache_bin* head)
+MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_block_allocator_bin_peek(const mpmm_block_allocator_bin* head)
 {
 	void* buffer = atomic_load_explicit(head, memory_order_acquire);
-	return mpmm_scache_find_allocator(buffer);
+	return mpmm_tcache_find_allocator(buffer);
 }
-
-// ================================================================
-//	THREAD CACHE
-// ================================================================
-
-typedef _Atomic(void*)atomic_ptr;
-
-typedef struct mpmm_tcache
-{
-	mpmm_intrusive_block_allocator** bins;
-	mpmm_rlist* recovered;
-} mpmm_tcache;
-
-static _Thread_local mpmm_tcache this_thread_cache;
 
 MPMM_INLINE_ALWAYS static void mpmm_tcache_init(mpmm_tcache* tcache)
 {
-	tcache->bins = (mpmm_intrusive_block_allocator**)mpmm_persistent_malloc(sizeof(void*) * size_class_count);
-	tcache->recovered = (mpmm_rlist*)mpmm_persistent_malloc(sizeof(mpmm_rlist*) * size_class_count);
+	size_t n = sizeof(void*) * size_class_count;
+	uint8_t* buffer = (uint8_t*)mpmm_persistent_malloc(n * 4);
+	tcache->bins = (mpmm_intrusive_block_allocator**)buffer;
+	buffer += n;
+	tcache->recovered = (mpmm_rlist*)buffer;
+	buffer += n;
+	tcache->bins_large = (mpmm_block_allocator**)buffer;
+	buffer += n;
+	tcache->recovered_large = (mpmm_rlist*)buffer;
 }
 
 MPMM_INLINE_ALWAYS static mpmm_tcache* mpmm_get_tcache()
@@ -987,50 +1050,121 @@ MPMM_INLINE_ALWAYS static mpmm_tcache* mpmm_get_tcache()
 	return &this_thread_cache;
 }
 
-MPMM_INLINE_ALWAYS static uint_fast8_t mpmm_size_class_of(size_t size)
+MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_tcache_small_size_class(size_t size)
 {
-	MPMM_UNLIKELY_IF(size > 4096)
-		return 53 + MPMM_LOG2_32((uint32_t)size) - 12;
+	MPMM_INVARIANT(size <= MPMM_SMALL_SIZE_CLASSES[MPMM_SMALL_SIZE_CLASS_COUNT - 1]);
 	uint_fast8_t log2 = MPMM_LOG2(size);
-	const uint_fast8_t limit = MPMM_SIZE_CLASS_LOOKUP_SIZE;
-	MPMM_INVARIANT(log2 >= limit);
+	uint_fast8_t limit = MPMM_SIZE_CLASS_LOOKUP_SIZE;
+	MPMM_INVARIANT(log2 < limit);
 	const uint_fast32_t* map = MPMM_SIZE_CLASS_LOOKUP[log2];
-	const uint_fast8_t map_size = MPMM_SIZE_CLASS_LOOKUP_SIZES[log2];
+	uint_fast32_t map_size = MPMM_SIZE_CLASS_LOOKUP_SIZES[log2];
+	uint_fast32_t offset = MPMM_SIZE_CLASS_LOOKUP_OFFSETS[log2];
 	uint_fast8_t i = 0;
 	for (; i != map_size; ++i)
 		MPMM_LIKELY_IF(map[i] >= size)
-		return i;
+			return offset + i;
 	MPMM_UNREACHABLE;
 }
 
-MPMM_INLINE_ALWAYS static uint_fast8_t mpmm_size_class_round(size_t size)
+MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_tcache_large_size_class(size_t size)
 {
-	MPMM_INVARIANT(size <= page_size);
-	MPMM_UNLIKELY_IF(size > 4096)
-		return MPMM_POW2_ROUND(size);
-	uint_fast8_t log2 = MPMM_LOG2(size);
-	const uint_fast8_t limit = MPMM_SIZE_CLASS_LOOKUP_SIZE;
-	MPMM_INVARIANT(log2 >= limit);
-	const uint_fast32_t* map = MPMM_SIZE_CLASS_LOOKUP[log2];
-	const uint_fast8_t map_size = MPMM_SIZE_CLASS_LOOKUP_SIZES[log2];
-	uint_fast8_t i = 0;
-	for (; i != map_size; ++i)
-		MPMM_LIKELY_IF(map[i] >= size)
-		return map[i];
-	MPMM_UNREACHABLE;
+	return MPMM_LOG2_32((uint32_t)size) - 12;
 }
 
-MPMM_INLINE_NEVER static void* mpmm_tcache_malloc_slow(mpmm_intrusive_block_allocator** bin, mpmm_rlist* recover_list, uint_fast8_t sc, size_t size)
+MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_small_slow(mpmm_tcache* tcache, size_t size, uint_fast32_t sc)
 {
-	size_t b = mpmm_tcache_round_size(size);
-	size_t k = mpmm_chunk_size_of(b);
-	mpmm_intrusive_block_allocator* allocator = (mpmm_intrusive_block_allocator*)mpmm_malloc(k);
+	void* r;
+	size_t k;
+	mpmm_intrusive_block_allocator* allocator;
+	mpmm_intrusive_block_allocator** bin;
+
+	k = mpmm_chunk_size_of(size);
+	allocator = (mpmm_intrusive_block_allocator*)mpmm_malloc(k);
 	MPMM_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mpmm_intrusive_block_allocator_init(allocator, b, k, recover_list, mpmm_get_tcache());
-	void* r = mpmm_intrusive_block_allocator_malloc(allocator);
+	mpmm_intrusive_block_allocator_init(allocator, size, k, tcache->recovered + sc, mpmm_get_tcache());
+	r = mpmm_intrusive_block_allocator_malloc(allocator);
+	bin = tcache->bins + sc;
 	allocator->next = *bin;
 	*bin = allocator;
+	return r;
+}
+
+MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_large_slow(mpmm_tcache* tcache, size_t size, uint_fast32_t sc)
+{
+	void* r;
+	void* buffer;
+	size_t k;
+	mpmm_block_allocator* allocator;
+	mpmm_block_allocator** bin;
+
+	k = mpmm_chunk_size_of(size);
+	buffer = mpmm_lcache_malloc(chunk_size, MPMM_ENABLE_FALLBACK);
+	MPMM_UNLIKELY_IF(buffer == NULL)
+		return NULL;
+	allocator = mpmm_tcache_find_or_insert_allocator(buffer);
+	MPMM_INVARIANT(allocator != NULL);
+	mpmm_block_allocator_init(allocator, MPMM_LOG2(size), k, tcache->recovered_large + sc, mpmm_get_tcache(), buffer);
+	r = mpmm_block_allocator_malloc(allocator);
+	bin = tcache->bins_large + sc;
+	allocator->next = *bin;
+	*bin = allocator;
+	return r;
+}
+
+MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_small_fast(mpmm_tcache* tcache, size_t size, uint_fast32_t sc, uint_fast64_t flags)
+{
+	void* r;
+	mpmm_intrusive_block_allocator** bin;
+	mpmm_rlist* recover_list;
+	mpmm_intrusive_block_allocator* allocator;
+
+	bin = tcache->bins + sc;
+	recover_list = tcache->recovered + sc;
+	allocator = (mpmm_intrusive_block_allocator*)*bin;
+	MPMM_UNLIKELY_IF(allocator == NULL)
+	{
+		allocator = (mpmm_intrusive_block_allocator*)atomic_exchange_explicit(recover_list, NULL, memory_order_acquire);
+		MPMM_UNLIKELY_IF(allocator == NULL)
+			return (flags & MPMM_ENABLE_FALLBACK) ? mpmm_tcache_malloc_small_slow(tcache, size, sc) : NULL;
+		*bin = (mpmm_intrusive_block_allocator*)allocator;
+	}
+	r = mpmm_intrusive_block_allocator_malloc(allocator);
+	MPMM_INVARIANT(r != NULL);
+	MPMM_UNLIKELY_IF(allocator->free_count == 0)
+	{
+		atomic_store_explicit(&allocator->unlinked, 1, memory_order_release);
+		*bin = (*bin)->next;
+		allocator->next = NULL;
+	}
+	return r;
+}
+
+MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_large_fast(mpmm_tcache* tcache, size_t size, uint_fast32_t sc, uint_fast64_t flags)
+{
+	void* r;
+	mpmm_block_allocator** bin;
+	mpmm_rlist* recover_list;
+	mpmm_block_allocator* allocator;
+	
+	bin = tcache->bins_large + sc;
+	recover_list = tcache->recovered_large + sc;
+	allocator = (mpmm_block_allocator*)*bin;
+	MPMM_UNLIKELY_IF(allocator == NULL)
+	{
+		allocator = (mpmm_block_allocator*)atomic_exchange_explicit(recover_list, NULL, memory_order_acquire);
+		MPMM_UNLIKELY_IF(allocator == NULL)
+			return (flags & MPMM_ENABLE_FALLBACK) ? mpmm_tcache_malloc_large_slow(tcache, size, sc) : NULL;
+		*bin = (mpmm_block_allocator*)allocator;
+	}
+	r = mpmm_block_allocator_malloc(allocator);
+	MPMM_INVARIANT(r != NULL);
+	MPMM_UNLIKELY_IF(allocator->free_count == 0)
+	{
+		atomic_store_explicit(&allocator->unlinked, 1, memory_order_release);
+		*bin = (*bin)->next;
+		allocator->next = NULL;
+	}
 	return r;
 }
 
@@ -1072,7 +1206,6 @@ MPMM_ATTR void MPMM_CALL mpmm_init_info_default(mpmm_init_options* out_options)
 
 MPMM_ATTR void MPMM_CALL mpmm_trim_options_default(mpmm_trim_options* out_options)
 {
-	out_options->flags = 0;
 	out_options->trim_limit = SIZE_MAX;
 }
 
@@ -1086,13 +1219,7 @@ MPMM_ATTR void MPMM_CALL mpmm_debugger_options_default(mpmm_debugger_options* ou
 
 MPMM_ATTR size_t MPMM_CALL mpmm_backend_required_alignment()
 {
-#ifdef MPMM_WINDOWS
-	SYSTEM_INFO i;
-	GetSystemInfo(&i);
-	return i.dwPageSize * MPMM_CACHE_LINE_SIZE * 8;
-#elif defined(MPMM_LINUX)
-	return (size_t)getpagesize() * MPMM_CACHE_LINE_SIZE * 8;
-#endif
+	return chunk_size;
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_init(const mpmm_init_options* options)
@@ -1114,6 +1241,12 @@ MPMM_ATTR void MPMM_CALL mpmm_init(const mpmm_init_options* options)
 }	
 	backend_init();
 	mpmm_lcache_init();
+	mpmm_tcache_common_init();
+}
+
+MPMM_ATTR mpmm_bool MPMM_CALL mpmm_is_initialized()
+{
+	return lcache_bins != NULL;
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_reset()
@@ -1125,11 +1258,23 @@ MPMM_ATTR void MPMM_CALL mpmm_stats(mpmm_mem_stats* out_stats)
 {
 }
 
+MPMM_ATTR void MPMM_CALL mpmm_params(mpmm_global_params* out_params)
+{
+	out_params->page_size = page_size;
+	out_params->chunk_size = chunk_size;
+	out_params->max_concurrency = max_concurrency;
+}
+
 MPMM_ATTR void* MPMM_CALL mpmm_malloc(size_t size)
 {
-	MPMM_LIKELY_IF(size <= mpmm_tcache_max_malloc_size())
-		return mpmm_tcache_malloc(size, 0);
-	return mpmm_lcache_malloc(size, 0);
+	void* r;
+	size = mpmm_round_size(size);
+	MPMM_LIKELY_IF(size <= mpmm_tcache_max_size())
+		r = mpmm_tcache_malloc(size, MPMM_ENABLE_FALLBACK);
+	else
+		r = mpmm_lcache_malloc(size, MPMM_ENABLE_FALLBACK);
+	MPMM_DEBUG_JUNK_FILL(r, size);
+	return r;
 }
 
 MPMM_ATTR mpmm_bool MPMM_CALL mpmm_resize(void* ptr, size_t old_size, size_t new_size)
@@ -1155,19 +1300,19 @@ MPMM_ATTR void* MPMM_CALL mpmm_realloc(void* ptr, size_t old_size, size_t new_si
 MPMM_ATTR void MPMM_CALL mpmm_free(void* ptr, size_t size)
 {
 	MPMM_INVARIANT(ptr != NULL);
-	MPMM_LIKELY_IF(size < mpmm_tcache_max_malloc_size())
+	MPMM_LIKELY_IF(size < mpmm_tcache_max_size())
 		return mpmm_tcache_free(ptr, size);
 	return mpmm_lcache_free(ptr, size);
 }
 
 MPMM_ATTR size_t MPMM_CALL mpmm_round_size(size_t size)
 {
-	MPMM_LIKELY_IF(size < mpmm_tcache_max_malloc_size())
+	MPMM_LIKELY_IF(size < mpmm_tcache_max_size())
 		return mpmm_tcache_round_size(size);
 	return mpmm_lcache_round_size(size);
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_purge()
+MPMM_ATTR size_t MPMM_CALL mpmm_purge(uint64_t flags, void* param)
 {
 	return 0;
 }
@@ -1179,27 +1324,18 @@ MPMM_ATTR size_t MPMM_CALL mpmm_trim(const mpmm_trim_options* options)
 
 MPMM_ATTR void* MPMM_CALL mpmm_tcache_malloc(size_t size, uint64_t flags)
 {
+	uint_fast32_t sc;
 	mpmm_tcache* tcache = mpmm_get_tcache();
-	uint_fast8_t sc = mpmm_size_class_of(size);
-	mpmm_intrusive_block_allocator** bin = tcache->bins + sc;
-	mpmm_rlist* recover_list = tcache->recovered + sc;
-	mpmm_intrusive_block_allocator* allocator = (mpmm_intrusive_block_allocator*)*bin;
-	MPMM_UNLIKELY_IF(allocator == NULL)
+	if (size < page_size)
 	{
-		allocator = (mpmm_intrusive_block_allocator*)atomic_exchange_explicit(recover_list, NULL, memory_order_acquire);
-		MPMM_UNLIKELY_IF(allocator == NULL)
-			return (flags & MPMM_ENABLE_FALLBACK) ? mpmm_tcache_malloc_slow(bin, recover_list, sc, size) : NULL;
-		*bin = (mpmm_intrusive_block_allocator*)allocator;
+		sc = mpmm_tcache_small_size_class(size);
+		return mpmm_tcache_malloc_small_fast(tcache, size, sc, flags);
 	}
-	void* r = mpmm_intrusive_block_allocator_malloc(allocator);
-	MPMM_INVARIANT(r != NULL);
-	MPMM_UNLIKELY_IF(allocator->free_count == 0)
+	else
 	{
-		atomic_store_explicit(&allocator->unlinked, 1, memory_order_release);
-		*bin = (*bin)->next;
-		allocator->next = NULL;
+		sc = mpmm_tcache_large_size_class(size);
+		return mpmm_tcache_malloc_large_fast(tcache, size, sc, flags);
 	}
-	return r;
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_tcache_free(void* ptr, size_t size)
@@ -1209,61 +1345,40 @@ MPMM_ATTR void MPMM_CALL mpmm_tcache_free(void* ptr, size_t size)
 	MPMM_LIKELY_IF(allocator->owner == mpmm_get_tcache())
 		mpmm_intrusive_block_allocator_free(allocator, ptr);
 	else
-		mpmm_intrusive_block_allocator_shared_free(allocator, ptr);
+		mpmm_intrusive_block_allocator_free_shared(allocator, ptr);
 }
 
 MPMM_ATTR size_t MPMM_CALL mpmm_tcache_round_size(size_t size)
 {
-	return mpmm_size_class_round(size);
+	MPMM_INVARIANT(size <= chunk_size / 2);
+	MPMM_UNLIKELY_IF(size >= 4096)
+		return MPMM_POW2_ROUND(size);
+	uint_fast8_t log2 = MPMM_LOG2(size);
+	const uint_fast8_t limit = MPMM_SIZE_CLASS_LOOKUP_SIZE;
+	MPMM_INVARIANT(log2 < limit);
+	const uint_fast32_t* map = MPMM_SIZE_CLASS_LOOKUP[log2];
+	const uint_fast8_t map_size = MPMM_SIZE_CLASS_LOOKUP_SIZES[log2];
+	uint_fast8_t i = 0;
+	for (; i != map_size; ++i)
+		MPMM_LIKELY_IF(map[i] >= size)
+		return map[i];
+	MPMM_UNREACHABLE;
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_tcache_flush()
+MPMM_ATTR size_t MPMM_CALL mpmm_tcache_flush(uint64_t flags, void* param)
 {
 	return 0;
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_tcache_min_malloc_size() { return 1; }
-MPMM_ATTR size_t MPMM_CALL mpmm_tcache_max_malloc_size() { return page_size; }
-
-MPMM_ATTR void* MPMM_CALL mpmm_scache_malloc(size_t size, uint64_t flags)
-{
-	return NULL;
-}
-
-MPMM_ATTR void MPMM_CALL mpmm_scache_free(void* ptr, size_t size)
-{
-}
-
-MPMM_ATTR size_t MPMM_CALL mpmm_scache_round_size(size_t size)
-{
-	return 0;
-}
-
-MPMM_ATTR size_t MPMM_CALL mpmm_scache_flush()
-{
-	return 0;
-}
-
-MPMM_ATTR size_t MPMM_CALL mpmm_scache_min_malloc_size()
-{
-	return page_size * 2;
-}
-
-MPMM_ATTR size_t MPMM_CALL mpmm_scache_max_malloc_size()
-{
-	return chunk_size / 2;
-}
+MPMM_ATTR size_t MPMM_CALL mpmm_tcache_min_size() { return 1; }
+MPMM_ATTR size_t MPMM_CALL mpmm_tcache_max_size() { return chunk_size / 2; }
 
 MPMM_ATTR void* MPMM_CALL mpmm_lcache_malloc(size_t size, uint64_t flags)
 {
+	void* r = NULL;
 	mpmm_chunk_list* bin = mpmm_lcache_find_bin(size);
-#ifdef MPMM_32BIT
-	MPMM_INVARIANT(bin != NULL);
-#else
-	MPMM_UNLIKELY_IF(bin == NULL)
-		return NULL;
-#endif
-	void* r = mpmm_chunk_list_pop(bin);
+	if (bin != NULL)
+		r = mpmm_chunk_list_pop(bin);
 	MPMM_UNLIKELY_IF(r == NULL && (flags & MPMM_ENABLE_FALLBACK))
 		r = backend_malloc(size);
 	return r;
@@ -1273,6 +1388,7 @@ MPMM_ATTR void MPMM_CALL mpmm_lcache_free(void* ptr, size_t size)
 {
 	mpmm_chunk_list* bin = mpmm_lcache_find_or_insert_bin(size);
 	MPMM_INVARIANT(bin != NULL);
+	mpmm_backend_purge((uint8_t*)ptr + page_size, size - page_size);
 	mpmm_chunk_list_push(bin, ptr);
 }
 
@@ -1281,27 +1397,39 @@ MPMM_ATTR size_t MPMM_CALL mpmm_lcache_round_size(size_t size)
 	return MPMM_ALIGN_ROUND(size, chunk_size);
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_lcache_flush()
+MPMM_ATTR size_t MPMM_CALL mpmm_lcache_flush(uint64_t flags, void* param)
 {
 	return 0;
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_lcache_min_malloc_size() { return chunk_size; }
-MPMM_ATTR size_t MPMM_CALL mpmm_lcache_max_malloc_size() { return SIZE_MAX; }
+MPMM_ATTR size_t MPMM_CALL mpmm_lcache_min_size() { return chunk_size; }
+MPMM_ATTR size_t MPMM_CALL mpmm_lcache_max_size() { return SIZE_MAX; }
 
 MPMM_ATTR void* MPMM_CALL mpmm_backend_malloc(size_t size)
 {
-	return backend_malloc(size);
+	MPMM_INVARIANT(backend_malloc != NULL);
+	void* r = backend_malloc(size);
+	MPMM_UNLIKELY_IF(r == NULL)
+		size = 0;
+	return r;
 }
 
 MPMM_ATTR mpmm_bool MPMM_CALL mpmm_backend_resize(void* ptr, size_t old_size, size_t new_size)
 {
+	MPMM_INVARIANT(backend_resize != NULL);
 	return backend_resize(ptr, old_size, new_size);
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_backend_free(void* ptr, size_t size)
 {
-	return backend_free(ptr, size);
+	MPMM_INVARIANT(backend_free != NULL);
+	backend_free(ptr, size);
+}
+
+MPMM_ATTR void MPMM_CALL mpmm_backend_purge(void* ptr, size_t size)
+{
+	MPMM_INVARIANT(backend_purge != NULL);
+	backend_purge(ptr, size);
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_debugger_init(const mpmm_debugger_options* options)
