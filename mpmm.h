@@ -316,7 +316,6 @@ namespace mpmm
 #define MPMM_INLINE_NEVER __attribute__((noinline))
 #endif
 #define MPMM_ASSUME(EXPRESSION) __builtin_assume((EXPRESSION))
-#define MPMM_ALLOCA(SIZE) __builtin_alloca((SIZE))
 #elif defined(_MSVC_LANG)
 #include <intrin.h>
 #define MPMM_EXPECT(CONDITION, VALUE) (CONDITION)
@@ -336,7 +335,6 @@ namespace mpmm
 #define MPMM_INLINE_NEVER __declspec(noinline)
 #endif
 #define MPMM_ASSUME(EXPRESSION) __assume((EXPRESSION))
-#define MPMM_ALLOCA(SIZE) _alloca((SIZE))
 #else
 #error "MPMALLOC: UNSUPPORTED COMPILER"
 #endif
@@ -462,13 +460,14 @@ typedef uint64_t mpmm_mask_type;
 typedef _Atomic(mpmm_bool) mpmm_atomic_bool;
 typedef _Atomic(mpmm_mask_type) mpmm_atomic_mask_type;
 
+#ifdef MPMM_WINDOWS
 static void* min_chunk;
 static void* max_address;
+#endif
 static size_t max_concurrency;
 static size_t page_size;
 static size_t chunk_size;
 static size_t chunk_size_mask;
-static size_t vas_granularity;
 static uint32_t size_class_count;
 static uint8_t page_size_log2;
 static uint8_t chunk_size_log2;
@@ -482,14 +481,12 @@ MPMM_INLINE_ALWAYS static void mpmm_sys_init()
 	SYSTEM_INFO info;
 	GetSystemInfo(&info);
 	page_size = info.dwPageSize;
-	vas_granularity = info.dwAllocationGranularity;
 	chunk_size = page_size * MPMM_CACHE_LINE_SIZE * 8;
 	max_address = info.lpMaximumApplicationAddress;
 	min_chunk = (void*)MPMM_ALIGN_ROUND((size_t)info.lpMinimumApplicationAddress, chunk_size);
 	max_concurrency = info.dwNumberOfProcessors;
 #else
 	page_size = (size_t)getpagesize();
-	vas_granularity = page_size;
 	chunk_size = page_size * MPMM_CACHE_LINE_SIZE * 8;
 #endif
 	chunk_size_mask = chunk_size - 1;
@@ -1004,30 +1001,6 @@ MPMM_INLINE_ALWAYS static void mpmm_tcache_bin_push(mpmm_block_allocator_bin* he
 		MPMM_LIKELY_IF(atomic_compare_exchange_weak_explicit(head, &prior, desired, memory_order_release, memory_order_relaxed))
 			break;
 	}
-}
-
-MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_block_allocator_bin_pop(mpmm_block_allocator_bin* head)
-{
-	mpmm_block_allocator* r;
-	void* prior;
-	void* desired;
-	for (;; MPMM_SPIN_WAIT)
-	{
-		prior = atomic_load_explicit(head, memory_order_acquire);
-		r = mpmm_tcache_find_allocator(prior);
-		MPMM_UNLIKELY_IF(r == NULL)
-			break;
-		desired = r->next->buffer;
-		MPMM_LIKELY_IF(atomic_compare_exchange_weak_explicit(head, &prior, desired, memory_order_release, memory_order_relaxed))
-			break;
-	}
-	return r;
-}
-
-MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_block_allocator_bin_peek(const mpmm_block_allocator_bin* head)
-{
-	void* buffer = atomic_load_explicit(head, memory_order_acquire);
-	return mpmm_tcache_find_allocator(buffer);
 }
 
 MPMM_INLINE_ALWAYS static void mpmm_tcache_init(mpmm_tcache* tcache)
