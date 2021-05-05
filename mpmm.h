@@ -232,6 +232,7 @@ namespace mpmm
 	namespace persistent
 	{
 		MPMM_ATTR void*		MPMM_CALL malloc(size_t size) noexcept { return mpmm_persistent_malloc(size); }
+		MPMM_ATTR void		MPMM_CALL reset() noexcept { mpmm_persistent_reset(); }
 	}
 
 	namespace backend
@@ -633,27 +634,27 @@ MPMM_INLINE_ALWAYS static void* mpmm_chunk_list_pop(mpmm_chunk_list* head)
 
 typedef struct mpmm_block_allocator
 {
-	alignas(MPMM_CACHE_LINE_SIZE) struct mpmm_block_allocator* next;
+	alignas (MPMM_CACHE_LINE_SIZE) struct mpmm_block_allocator* next;
 	mpmm_rlist* recovered;
 	struct mpmm_tcache* owner;
 	uint8_t* buffer;
 	uint32_t free_count;
 	uint8_t block_size_log2;
 	mpmm_atomic_bool unlinked;
-	alignas(MPMM_CACHE_LINE_SIZE) mpmm_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
-	alignas(MPMM_CACHE_LINE_SIZE) mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
+	alignas (MPMM_CACHE_LINE_SIZE) mpmm_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
+	alignas (MPMM_CACHE_LINE_SIZE) mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
 } mpmm_block_allocator;
 
 typedef struct mpmm_intrusive_block_allocator
 {
-	alignas(MPMM_CACHE_LINE_SIZE) struct mpmm_intrusive_block_allocator* next;
+	alignas (MPMM_CACHE_LINE_SIZE) struct mpmm_intrusive_block_allocator* next;
 	mpmm_rlist* recovered;
 	struct mpmm_tcache* owner;
 	uint32_t free_count;
 	uint32_t block_size;
 	mpmm_atomic_bool unlinked;
-	alignas(MPMM_CACHE_LINE_SIZE) mpmm_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
-	alignas(MPMM_CACHE_LINE_SIZE) mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
+	alignas (MPMM_CACHE_LINE_SIZE) mpmm_mask_type free_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
+	alignas (MPMM_CACHE_LINE_SIZE) mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
 } mpmm_intrusive_block_allocator;
 
 MPMM_INLINE_ALWAYS static size_t mpmm_chunk_size_of(size_t size)
@@ -828,7 +829,7 @@ MPMM_INLINE_ALWAYS static void* mpmm_intrusive_block_allocator_allocator_of(void
 //	STATS
 // ================================================================
 
-typedef struct mpmm_shared_counter { alignas(MPMM_CACHE_LINE_SIZE) atomic_size_t value; } mpmm_shared_counter;
+typedef struct mpmm_shared_counter { alignas (MPMM_CACHE_LINE_SIZE) atomic_size_t value; } mpmm_shared_counter;
 
 static mpmm_shared_counter used_memory;
 static mpmm_shared_counter total_memory;
@@ -1249,7 +1250,7 @@ MPMM_ATTR void* MPMM_CALL mpmm_realloc(void* ptr, size_t old_size, size_t new_si
 	void* r = mpmm_malloc(new_size);
 	MPMM_LIKELY_IF(r != NULL)
 	{
-		memcpy(r, ptr, old_size);
+		(void)memcpy(r, ptr, old_size);
 		mpmm_free(ptr, old_size);
 	}
 	return r;
@@ -1402,7 +1403,7 @@ MPMM_ATTR void MPMM_CALL mpmm_backend_purge(void* ptr, size_t size)
 
 MPMM_ATTR void MPMM_CALL mpmm_debugger_init(const mpmm_debugger_options* options)
 {
-	memcpy(&debugger, options, sizeof(mpmm_debugger_options));
+	(void)memcpy(&debugger, options, sizeof(mpmm_debugger_options));
 }
 
 MPMM_ATTR mpmm_bool MPMM_CALL mpmm_debugger_enabled()
