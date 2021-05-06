@@ -173,8 +173,6 @@ MPMM_ATTR void					MPMM_CALL mpmm_debugger_warning(const char* message, size_t s
 MPMM_ATTR void					MPMM_CALL mpmm_debugger_error(const char* message, size_t size);
 MPMM_EXTERN_C_END
 
-
-
 #if defined(__cplusplus) && !defined(MPMM_NO_CXX_API)
 namespace mpmm
 {
@@ -290,8 +288,6 @@ namespace mpmm
 #ifdef _WIN32
 #define MPMM_WINDOWS
 #include <Windows.h>
-#include <intrin.h>
-#define MPMM_SPIN_WAIT YieldProcessor()
 #elif defined(__linux__) || defined(__LINUX__)
 #include <unistd.h>
 #include <sys/mman.h>
@@ -301,6 +297,11 @@ namespace mpmm
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
+#if defined(__x86_64__) || defined(__i386__)
+#define MPMM_SPIN_WAIT __builtin_ia32_pause()
+#elif defined(__arm__)
+#define MPMM_SPIN_WAIT __yield()
+#endif
 #define MPMM_EXPECT(CONDITION, VALUE) __builtin_expect((CONDITION), (VALUE))
 #define MPMM_LIKELY_IF(CONDITION) if (MPMM_EXPECT(CONDITION, 1))
 #define MPMM_UNLIKELY_IF(CONDITION) if (MPMM_EXPECT(CONDITION, 0))
@@ -320,6 +321,11 @@ namespace mpmm
 #define MPMM_ASSUME(EXPRESSION) __builtin_assume((EXPRESSION))
 #elif defined(_MSVC_LANG)
 #include <intrin.h>
+#if defined(__x86_64__) || defined(__i386__)
+#define MPMM_SPIN_WAIT _mm_pause()
+#elif defined(__arm__)
+#define MPMM_SPIN_WAIT __yield()
+#endif
 #define MPMM_EXPECT(CONDITION, VALUE) (CONDITION)
 #define MPMM_LIKELY_IF(CONDITION) if ((CONDITION))
 #define MPMM_UNLIKELY_IF(CONDITION) if ((CONDITION))
@@ -347,7 +353,6 @@ namespace mpmm
 #define MPMM_BS64(MASK, INDEX) (MASK) |= (1ULL << (INDEX))
 #define MPMM_BR32(MASK, INDEX) (MASK) &= ~(1U << (INDEX))
 #define MPMM_BR64(MASK, INDEX) (MASK) &= ~(1ULL << (INDEX))
-
 #define MPMM_LOG2_32(VALUE) (31 - MPMM_CLZ32(VALUE))
 #define MPMM_LOG2_64(VALUE) (63 - MPMM_CLZ64(VALUE))
 #define MPMM_POW2_ROUND32(VALUE) (1U << (32 - MPMM_CLZ32((VALUE) - 1U)))
@@ -588,12 +593,12 @@ typedef _Atomic(mpmm_thread_id) mpmm_atomic_thread_id;
 
 static void mpmm_empty_function() { }
 
-static mpmm_fn_init backend_init = mpmm_os_init;
-static mpmm_fn_cleanup backend_cleanup = mpmm_empty_function;
-static mpmm_fn_malloc backend_malloc = mpmm_os_malloc;
-static mpmm_fn_resize backend_resize = mpmm_os_resize;
-static mpmm_fn_free backend_free = mpmm_os_free;
-static mpmm_fn_purge backend_purge = mpmm_os_purge;
+static mpmm_fn_init		backend_init	= mpmm_os_init;
+static mpmm_fn_cleanup	backend_cleanup	= mpmm_empty_function;
+static mpmm_fn_malloc	backend_malloc	= mpmm_os_malloc;
+static mpmm_fn_resize	backend_resize	= mpmm_os_resize;
+static mpmm_fn_free		backend_free	= mpmm_os_free;
+static mpmm_fn_purge	backend_purge	= mpmm_os_purge;
 
 // ================================================================
 //	COMMON
