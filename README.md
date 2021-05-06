@@ -2,7 +2,7 @@
 
 ## Compiler Support
 
-Currently GCC, CLang and MSVC are supported.
+Currently GCC, Clang and MSVC are supported.
 
 ## Platform Support
 
