@@ -7,7 +7,7 @@ Currently GCC, Clang and MSVC are supported.
 
 ## Platform Support
 
-MPMM has been tested in Windows 10. It *might* work on Linux.
+MPMM has been tested on Windows 10. It *might* work on Linux.
 
 ## Overview
 
