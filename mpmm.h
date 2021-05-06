@@ -289,6 +289,7 @@ namespace mpmm
 #define MPMM_WINDOWS
 #include <Windows.h>
 #elif defined(__linux__) || defined(__LINUX__)
+#define MPMM_LINUX
 #include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
@@ -1408,7 +1409,9 @@ MPMM_ATTR void MPMM_CALL mpmm_backend_purge(void* ptr, size_t size)
 
 MPMM_ATTR void MPMM_CALL mpmm_debugger_init(const mpmm_debugger_options* options)
 {
+#ifdef MPMM_DEBUG
 	(void)memcpy(&debugger, options, sizeof(mpmm_debugger_options));
+#endif
 }
 
 MPMM_ATTR mpmm_bool MPMM_CALL mpmm_debugger_enabled()
@@ -1422,17 +1425,23 @@ MPMM_ATTR mpmm_bool MPMM_CALL mpmm_debugger_enabled()
 
 MPMM_ATTR void MPMM_CALL mpmm_debugger_message(const char* message, size_t size)
 {
+#ifdef MPMM_DEBUG
 	debugger.message(debugger.context, message, size);
+#endif
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_debugger_warning(const char* message, size_t size)
 {
+#ifdef MPMM_DEBUG
 	debugger.warning(debugger.context, message, size);
+#endif
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_debugger_error(const char* message, size_t size)
 {
+#ifdef MPMM_DEBUG
 	debugger.error(debugger.context, message, size);
+#endif
 }
 MPMM_EXTERN_C_END
 #endif
