@@ -1,8 +1,17 @@
 # MPMM
 
+## Compiler Support
+
+Currently GCC, CLang and MSVC are supported.
+
+## Platform Support
+
+MPMM has been tested in Windows 10. It *might* work on Linux.
+
 ## Overview
 
-MPMM is a high-performance memory allocator written in C for Windows and Linux systems. The main goals of this project are:
+MPMM is a high-performance memory allocator written in C for Windows and Linux systems.  
+The main goals of this project are:
 -	Eliminate synchronization events and minimize contention.
 -	Experiment with highly cache aware data structures.
 -	Avoid heap size blowup.
