@@ -173,7 +173,7 @@ MPMM_ATTR void					MPMM_CALL mpmm_debugger_warning(const char* message, size_t s
 MPMM_ATTR void					MPMM_CALL mpmm_debugger_error(const char* message, size_t size);
 MPMM_EXTERN_C_END
 
-#if defined(__cplusplus) && !defined(MPMM_NO_CXX_API)
+#if defined(__cplusplus) && defined(MPMM_CXX_API)
 namespace mpmm
 {
 	struct init_options : mpmm_init_options
