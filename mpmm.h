@@ -264,6 +264,7 @@ namespace mpmm
 #define MPMM_32BIT
 #else
 #define MPMM_64BIT
+#error "MPMM: 64-BIT PROGRAMS ARE CURRENTLY NOT SUPPORTED."
 #endif
 
 #if !defined(MPMM_DEBUG) && (defined(_DEBUG) || !defined(NDEBUG))
@@ -303,6 +304,7 @@ namespace mpmm
 #elif defined(__arm__)
 #define MPMM_SPIN_WAIT __yield()
 #endif
+#define MPMM_PREFETCH(PTR) __builtin_prefetch((PTR), 1, 3)
 #define MPMM_EXPECT(CONDITION, VALUE) __builtin_expect((CONDITION), (VALUE))
 #define MPMM_LIKELY_IF(CONDITION) if (MPMM_EXPECT(CONDITION, 1))
 #define MPMM_UNLIKELY_IF(CONDITION) if (MPMM_EXPECT(CONDITION, 0))
@@ -324,8 +326,10 @@ namespace mpmm
 #include <intrin.h>
 #if defined(__x86_64__) || defined(__i386__)
 #define MPMM_SPIN_WAIT _mm_pause()
+#define MPMM_PREFETCH(PTR) _mm_prefetch((PTR), _MM_HINT_T0)
 #elif defined(__arm__)
 #define MPMM_SPIN_WAIT __yield()
+#define MPMM_PREFETCH(PTR) __prefetch((PTR), 1, 3)
 #endif
 #define MPMM_EXPECT(CONDITION, VALUE) (CONDITION)
 #define MPMM_LIKELY_IF(CONDITION) if ((CONDITION))
@@ -799,7 +803,9 @@ MPMM_INLINE_ALWAYS static void* mpmm_block_allocator_malloc(mpmm_block_allocator
 		offset <<= self->block_size_log2;
 		--self->free_count;
 		MPMM_UNLIKELY_IF(self->free_count == 0)
+		{
 			self->free_count += mpmm_intrusive_block_allocator_reclaim(self->free_map, self->marked_map, MPMM_BLOCK_ALLOCATOR_MASK_COUNT);
+		}
 		return self->buffer + offset;
 	}
 	MPMM_UNREACHABLE;
@@ -818,7 +824,11 @@ MPMM_INLINE_ALWAYS static void* mpmm_intrusive_block_allocator_malloc(mpmm_intru
 		offset *= self->block_size;
 		--self->free_count;
 		MPMM_UNLIKELY_IF(self->free_count == 0)
+		{
+			MPMM_UNLIKELY_IF(self->next != NULL)
+				MPMM_PREFETCH(self->next);
 			self->free_count += mpmm_intrusive_block_allocator_reclaim(self->free_map, self->marked_map, MPMM_BLOCK_ALLOCATOR_MASK_COUNT);
+		}
 		return (uint8_t*)self + offset;
 	}
 	MPMM_UNREACHABLE;
@@ -937,7 +947,7 @@ MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc_impl(persistent_allocator* allo
 	size_t offset;
 
 	MPMM_UNLIKELY_IF(size >= chunk_size)
-		return backend_malloc(MPMM_ALIGN_ROUND(size, chunk_size));
+		return mpmm_lcache_malloc(MPMM_ALIGN_ROUND(size, chunk_size), MPMM_ENABLE_FALLBACK);
 	current = atomic_load_explicit(allocator, memory_order_acquire);
 	do
 	{
