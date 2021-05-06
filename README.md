@@ -30,3 +30,55 @@ The large cache uses a more conventional approach: it consists of a global array
 
 ## Backend Allocator
 If MPMM runs out of memory, by default it will request more memory to the system (mmap/VirtualAlloc2). However, the user can also provide their own set of callbacks at startup.
+
+## API
+
+```c
+void        mpmm_init_info_default(mpmm_init_options* out_options);
+void        mpmm_trim_options_default(mpmm_trim_options* out_options);
+void        mpmm_debugger_options_default(mpmm_debugger_options* out_options);
+
+void        mpmm_init(const mpmm_init_options* options);
+mpmm_bool   mpmm_is_initialized();
+void        mpmm_reset();
+
+void        mpmm_stats(mpmm_mem_stats* out_stats);
+void        mpmm_params(mpmm_global_params* out_params);
+
+void*       mpmm_malloc(size_t size);
+mpmm_bool   mpmm_resize(void* ptr, size_t old_size, size_t new_size);
+void*       mpmm_realloc(void* ptr, size_t old_size, size_t new_size);
+void        mpmm_free(void* ptr, size_t size);
+size_t      mpmm_round_size(size_t size);
+size_t      mpmm_purge(uint64_t flags, void* param);
+size_t      mpmm_trim(const mpmm_trim_options* options);
+
+void*       mpmm_tcache_malloc(size_t size, uint64_t flags);
+void        mpmm_tcache_free(void* ptr, size_t size);
+size_t      mpmm_tcache_round_size(size_t size);
+size_t      mpmm_tcache_flush(uint64_t flags, void* param);
+size_t      mpmm_tcache_min_size();
+size_t      mpmm_tcache_max_size();
+
+void*       mpmm_lcache_malloc(size_t size, uint64_t flags);
+void        mpmm_lcache_free(void* ptr, size_t size);
+size_t      mpmm_lcache_round_size(size_t size);
+size_t      mpmm_lcache_flush(uint64_t flags, void* param);
+size_t      mpmm_lcache_min_size();
+size_t      mpmm_lcache_max_size();
+
+void*       mpmm_persistent_malloc(size_t size);
+void        mpmm_persistent_reset();
+
+size_t      mpmm_backend_required_alignment();
+void*       mpmm_backend_malloc(size_t size);
+mpmm_bool   mpmm_backend_resize(void* ptr, size_t old_size, size_t new_size);
+void        mpmm_backend_free(void* ptr, size_t size);
+void        mpmm_backend_purge(void* ptr, size_t size);
+
+void        mpmm_debugger_init(const mpmm_debugger_options* options);
+mpmm_bool   mpmm_debugger_enabled();
+void        mpmm_debugger_message(const char* message, size_t size);
+void        mpmm_debugger_warning(const char* message, size_t size);
+void        mpmm_debugger_error(const char* message, size_t size);
+```
