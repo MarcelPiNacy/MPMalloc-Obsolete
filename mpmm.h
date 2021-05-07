@@ -259,7 +259,9 @@ namespace mpmm
 #ifdef MPMM_IMPLEMENTATION
 
 #include <stdbool.h>
+#ifndef __cplusplus
 #include <stdalign.h>
+#endif
 
 #ifndef __STDC_NO_ATOMICS__
 #include <stdatomic.h>
