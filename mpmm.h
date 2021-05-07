@@ -257,9 +257,15 @@ namespace mpmm
 
 
 #ifdef MPMM_IMPLEMENTATION
+
 #include <stdbool.h>
-#include <stdatomic.h>
 #include <stdalign.h>
+
+#ifndef __STDC_NO_ATOMICS__
+#include <stdatomic.h>
+#else
+#error "MPMM: This compiler doesn't support C11 standard atomics via the <stdatomic.h> header."
+#endif
 
 #if UINT32_MAX == UINTPTR_MAX
 #define MPMM_32BIT
