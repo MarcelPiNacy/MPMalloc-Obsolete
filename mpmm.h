@@ -61,7 +61,7 @@ typedef enum mpmm_malloc_flag_bits
 {
 	MPMM_ENABLE_FALLBACK = 1,
 } mpmm_malloc_flag_bits;
-typedef uint64_t mpmm_malloc_flags;
+typedef uint64_t mpmm_flags;
 
 typedef enum mpmm_flush_type
 {
@@ -141,20 +141,20 @@ MPMM_ATTR mpmm_bool				MPMM_CALL mpmm_resize(void* ptr, size_t old_size, size_t 
 MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_realloc(void* ptr, size_t old_size, size_t new_size);
 MPMM_ATTR void					MPMM_CALL mpmm_free(void* ptr, size_t size);
 MPMM_ATTR size_t				MPMM_CALL mpmm_round_size(size_t size);
-MPMM_ATTR size_t				MPMM_CALL mpmm_purge(mpmm_malloc_flags flags, void* param);
+MPMM_ATTR size_t				MPMM_CALL mpmm_purge(mpmm_flags flags, void* param);
 MPMM_ATTR size_t				MPMM_CALL mpmm_trim(const mpmm_trim_options* options);
 
-MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_tcache_malloc(size_t size, mpmm_malloc_flags flags);
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_tcache_malloc(size_t size, mpmm_flags flags);
 MPMM_ATTR void					MPMM_CALL mpmm_tcache_free(void* ptr, size_t size);
 MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_round_size(size_t size);
-MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_flush(mpmm_malloc_flags flags, void* param);
+MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_flush(mpmm_flags flags, void* param);
 MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_min_size();
 MPMM_ATTR size_t				MPMM_CALL mpmm_tcache_max_size();
 
-MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_lcache_malloc(size_t size, mpmm_malloc_flags flags);
+MPMM_NODISCARD MPMM_ATTR void*	MPMM_CALL mpmm_lcache_malloc(size_t size, mpmm_flags flags);
 MPMM_ATTR void					MPMM_CALL mpmm_lcache_free(void* ptr, size_t size);
 MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_round_size(size_t size);
-MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_flush(mpmm_malloc_flags flags, void* param);
+MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_flush(mpmm_flags flags, void* param);
 MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_min_size();
 MPMM_ATTR size_t				MPMM_CALL mpmm_lcache_max_size();
 
@@ -205,25 +205,25 @@ namespace mpmm
 	MPMM_ATTR void*			MPMM_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mpmm_realloc(ptr, old_size, new_size); }
 	MPMM_ATTR void			MPMM_CALL free(void* ptr, size_t size) noexcept { mpmm_free(ptr, size); }
 	MPMM_ATTR size_t		MPMM_CALL round_size(size_t size) noexcept { return mpmm_round_size(size); }
-	MPMM_ATTR size_t		MPMM_CALL purge(mpmm_malloc_flags flags, void* param) noexcept { return mpmm_purge(flags, param); }
+	MPMM_ATTR size_t		MPMM_CALL purge(mpmm_flags flags, void* param) noexcept { return mpmm_purge(flags, param); }
 	MPMM_ATTR size_t		MPMM_CALL trim(const trim_options* options) noexcept { return mpmm_trim((const mpmm_trim_options*)options); }
 
 	namespace thread_cache
 	{
-		MPMM_ATTR void*		MPMM_CALL malloc(size_t size, mpmm_malloc_flags flags) noexcept { return mpmm_tcache_malloc(size, flags); }
+		MPMM_ATTR void*		MPMM_CALL malloc(size_t size, mpmm_flags flags) noexcept { return mpmm_tcache_malloc(size, flags); }
 		MPMM_ATTR void		MPMM_CALL free(void* ptr, size_t size) noexcept { mpmm_tcache_free(ptr, size); }
 		MPMM_ATTR size_t	MPMM_CALL round_size(size_t size) noexcept { return mpmm_tcache_round_size(size); }
-		MPMM_ATTR size_t	MPMM_CALL flush(mpmm_malloc_flags flags, void* param) noexcept { return mpmm_tcache_flush(flags, param); }
+		MPMM_ATTR size_t	MPMM_CALL flush(mpmm_flags flags, void* param) noexcept { return mpmm_tcache_flush(flags, param); }
 		MPMM_ATTR size_t	MPMM_CALL min_size() noexcept { return mpmm_tcache_min_size(); }
 		MPMM_ATTR size_t	MPMM_CALL max_size() noexcept { return mpmm_tcache_max_size(); }
 	}
 
 	namespace large_cache
 	{
-		MPMM_ATTR void*		MPMM_CALL malloc(size_t size, mpmm_malloc_flags flags) noexcept { return mpmm_lcache_malloc(size, flags); }
+		MPMM_ATTR void*		MPMM_CALL malloc(size_t size, mpmm_flags flags) noexcept { return mpmm_lcache_malloc(size, flags); }
 		MPMM_ATTR void		MPMM_CALL free(void* ptr, size_t size) noexcept { mpmm_lcache_free(ptr, size); }
 		MPMM_ATTR size_t	MPMM_CALL round_size(size_t size) noexcept { return mpmm_lcache_round_size(size); }
-		MPMM_ATTR size_t	MPMM_CALL flush(mpmm_malloc_flags flags, void* param) noexcept { return mpmm_lcache_flush(flags, param); }
+		MPMM_ATTR size_t	MPMM_CALL flush(mpmm_flags flags, void* param) noexcept { return mpmm_lcache_flush(flags, param); }
 		MPMM_ATTR size_t	MPMM_CALL min_size() noexcept { return mpmm_lcache_min_size(); }
 		MPMM_ATTR size_t	MPMM_CALL max_size() noexcept { return mpmm_lcache_max_size(); }
 	}
@@ -1475,7 +1475,7 @@ MPMM_ATTR size_t MPMM_CALL mpmm_round_size(size_t size)
 	return mpmm_lcache_round_size(size);
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_purge(mpmm_malloc_flags flags, void* param)
+MPMM_ATTR size_t MPMM_CALL mpmm_purge(mpmm_flags flags, void* param)
 {
 	return 0;
 }
@@ -1485,7 +1485,7 @@ MPMM_ATTR size_t MPMM_CALL mpmm_trim(const mpmm_trim_options* options)
 	return 0;
 }
 
-MPMM_ATTR void* MPMM_CALL mpmm_tcache_malloc(size_t size, mpmm_malloc_flags flags)
+MPMM_ATTR void* MPMM_CALL mpmm_tcache_malloc(size_t size, mpmm_flags flags)
 {
 	void* r;
 	uint_fast8_t sc;
@@ -1538,7 +1538,7 @@ MPMM_ATTR size_t MPMM_CALL mpmm_tcache_round_size(size_t size)
 	MPMM_UNREACHABLE;
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_tcache_flush(mpmm_malloc_flags flags, void* param)
+MPMM_ATTR size_t MPMM_CALL mpmm_tcache_flush(mpmm_flags flags, void* param)
 {
 	return 0;
 }
@@ -1546,7 +1546,7 @@ MPMM_ATTR size_t MPMM_CALL mpmm_tcache_flush(mpmm_malloc_flags flags, void* para
 MPMM_ATTR size_t MPMM_CALL mpmm_tcache_min_size() { return 1; }
 MPMM_ATTR size_t MPMM_CALL mpmm_tcache_max_size() { return chunk_size / 2; }
 
-MPMM_ATTR void* MPMM_CALL mpmm_lcache_malloc(size_t size, mpmm_malloc_flags flags)
+MPMM_ATTR void* MPMM_CALL mpmm_lcache_malloc(size_t size, mpmm_flags flags)
 {
 	void* r = NULL;
 	mpmm_chunk_list* bin = mpmm_lcache_find_bin(size);
@@ -1570,7 +1570,7 @@ MPMM_ATTR size_t MPMM_CALL mpmm_lcache_round_size(size_t size)
 	return MPMM_ALIGN_ROUND(size, chunk_size);
 }
 
-MPMM_ATTR size_t MPMM_CALL mpmm_lcache_flush(mpmm_malloc_flags flags, void* param)
+MPMM_ATTR size_t MPMM_CALL mpmm_lcache_flush(mpmm_flags flags, void* param)
 {
 	return 0;
 }

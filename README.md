@@ -3,7 +3,6 @@
 ## Compiler Support
 
 Currently GCC, Clang and MSVC are supported.  
-<sub>**Warning: 64-bit processors are not supported right now.**</sub>
 
 ## Platform Support
 
