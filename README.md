@@ -3,6 +3,7 @@
 ## Compiler Support
 
 Currently GCC, Clang and MSVC are supported.  
+<sub>**Warning: MPMM includes `<stdatomic.h>` and `<stdalign.h>`: on MSVC you may need to provide them yourself, since Microsoft doesn't seem to have added them yet.**</sub>
 
 ## Platform Support
 
