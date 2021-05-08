@@ -259,15 +259,9 @@ namespace mpmm
 #ifdef MPMM_IMPLEMENTATION
 
 #include <stdbool.h>
-
+#include <stdatomic.h>
 #ifndef __cplusplus
 #include <stdalign.h>
-#endif
-
-#if !__STDC_NO_ATOMICS__
-#include <stdatomic.h>
-#else
-#error "MPMM: This compiler doesn't support C11 standard atomics via the <stdatomic.h> header."
 #endif
 
 #if UINT32_MAX == UINTPTR_MAX
@@ -1083,7 +1077,7 @@ static void* mpmm_trie_insert(mpmm_trie_root* root, size_t key, uint_fast8_t val
 			leaf_ptr = new_leaf_ptr;
 			break;
 		}
-		mpmm_lcache_free(new_branch_ptr, real_leaf_size);
+		mpmm_lcache_free(new_leaf_ptr, real_leaf_size);
 	}
 	return leaf_ptr + (leaf_index << value_size_log2);
 }
