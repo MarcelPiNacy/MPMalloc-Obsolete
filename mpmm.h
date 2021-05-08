@@ -259,11 +259,12 @@ namespace mpmm
 #ifdef MPMM_IMPLEMENTATION
 
 #include <stdbool.h>
+
 #ifndef __cplusplus
 #include <stdalign.h>
 #endif
 
-#ifndef __STDC_NO_ATOMICS__
+#if __STDC_NO_ATOMICS__
 #include <stdatomic.h>
 #else
 #error "MPMM: This compiler doesn't support C11 standard atomics via the <stdatomic.h> header."
@@ -1005,8 +1006,7 @@ MPMM_ATTR void MPMM_CALL mpmm_persistent_reset_impl(persistent_allocator* alloca
 }
 
 #ifdef MPMM_64BIT
-#define MPMM_TRIE_ROOT_SIZE_LOG2 8
-#define MPMM_TRIE_ROOT_SIZE (1U << MPMM_TRIE_ROOT_SIZE_LOG2)
+#define MPMM_TRIE_ROOT_SIZE 256
 
 typedef _Atomic(uint8_t*) mpmm_trie_leaf;
 typedef _Atomic(mpmm_trie_leaf*) mpmm_trie_branch;
@@ -1014,6 +1014,8 @@ typedef _Atomic(mpmm_trie_branch*) mpmm_trie_root;
 static size_t branch_size;
 static size_t branch_mask;
 static size_t leaf_size;
+static size_t leaf_mask;
+static uint8_t leaf_log2;
 static uint8_t branch_log2;
 
 static void* mpmm_trie_find(mpmm_trie_root* root, size_t key, uint_fast8_t value_size_log2)
@@ -1023,11 +1025,12 @@ static void* mpmm_trie_find(mpmm_trie_root* root, size_t key, uint_fast8_t value
 	mpmm_trie_branch* branch_ptr;
 	mpmm_trie_leaf* leaf_ptr;
 
-	root_index = (uint8_t)key;
-	key >>= MPMM_TRIE_ROOT_SIZE_LOG2;
+	leaf_index = key & leaf_mask;
+	key >>= leaf_log2;
 	branch_index = key & branch_mask;
 	key >>= branch_log2;
-	leaf_index = key;
+	root_index = key;
+
 	branch_ptr = atomic_load_explicit(root + root_index, memory_order_acquire);
 	MPMM_UNLIKELY_IF(branch_ptr == NULL)
 		return NULL;
@@ -1048,11 +1051,12 @@ static void* mpmm_trie_insert(mpmm_trie_root* root, size_t key, uint_fast8_t val
 	mpmm_trie_leaf* new_leaf_ptr;
 	size_t real_leaf_size = leaf_size << value_size_log2;
 
-	root_index = (uint8_t)key;
-	key >>= MPMM_TRIE_ROOT_SIZE_LOG2;
+	leaf_index = key & leaf_mask;
+	key >>= leaf_log2;
 	branch_index = key & branch_mask;
 	key >>= branch_log2;
-	leaf_index = key;
+	root_index = key;
+
 	root += root_index;
 	for (;; MPMM_SPIN_WAIT)
 	{
@@ -1100,7 +1104,7 @@ static size_t lcache_bin_count;
 #endif
 static mpmm_lcache_bin* lcache_bins;
 #else
-static mpmm_trie_root lcache_bin_roots[256];
+static mpmm_trie_root lcache_bin_roots[MPMM_TRIE_ROOT_SIZE];
 #endif
 
 MPMM_INLINE_ALWAYS static void mpmm_lcache_init()
@@ -1114,12 +1118,13 @@ MPMM_INLINE_ALWAYS static void mpmm_lcache_init()
 	MPMM_INVARIANT(lcache_bins != NULL);
 #else
 	uint_fast8_t n = 64 - chunk_size_log2;
-	uint_fast8_t leaf_log2 = chunk_size_log2;
+	leaf_log2 = chunk_size_log2;
 	branch_log2 = n - leaf_log2 - 4;
 	leaf_log2 -= 4;
 	branch_size = 1ULL << (branch_log2 + 3);
 	leaf_size = 1ULL << leaf_log2;
 	branch_mask = branch_size - 1;
+	leaf_mask = leaf_size - 1;
 #endif
 }
 
@@ -1152,7 +1157,7 @@ MPMM_INLINE_ALWAYS static mpmm_chunk_list* mpmm_lcache_insert_bin(size_t size)
 #ifdef MPMM_32BIT
 static mpmm_block_allocator* tcache_lookup;
 #else
-static mpmm_trie_root tcache_lookup_roots[256];
+static mpmm_trie_root tcache_lookup_roots[MPMM_TRIE_ROOT_SIZE];
 #endif
 
 MPMM_INLINE_ALWAYS static void mpmm_tcache_common_init()
@@ -1495,26 +1500,21 @@ MPMM_ATTR size_t MPMM_CALL mpmm_trim(const mpmm_trim_options* options)
 
 MPMM_ATTR void* MPMM_CALL mpmm_tcache_malloc(size_t size, mpmm_flags flags)
 {
-	void* r;
 	uint_fast8_t sc;
 	mpmm_tcache* tcache;
 	
 	tcache = mpmm_get_tcache();
 	sc = mpmm_tcache_size_class(size);
-	if (size <= page_size)
-		r = mpmm_tcache_malloc_small_fast(tcache, size, sc, flags);
-	else
-		r = mpmm_tcache_malloc_large_fast(tcache, size, sc, flags);
-	return r;
+	return (size <= page_size ? mpmm_tcache_malloc_small_fast : mpmm_tcache_malloc_large_fast)(tcache, size, sc, flags);
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_tcache_free(void* ptr, size_t size)
 {
 	size_t k = mpmm_chunk_size_of(size);
-	if (size <= page_size)
+	MPMM_LIKELY_IF(size <= page_size)
 	{
 		mpmm_intrusive_block_allocator* allocator = (mpmm_intrusive_block_allocator*)mpmm_intrusive_block_allocator_allocator_of(ptr, k);
-		if (allocator->owner == mpmm_get_tcache())
+		MPMM_LIKELY_IF(allocator->owner == mpmm_get_tcache())
 			mpmm_intrusive_block_allocator_free(allocator, ptr);
 		else
 			mpmm_intrusive_block_allocator_free_shared(allocator, ptr);
@@ -1522,7 +1522,7 @@ MPMM_ATTR void MPMM_CALL mpmm_tcache_free(void* ptr, size_t size)
 	else
 	{
 		mpmm_block_allocator* allocator = mpmm_tcache_block_allocator_of(ptr);
-		if (allocator->owner == mpmm_get_tcache())
+		MPMM_LIKELY_IF(allocator->owner == mpmm_get_tcache())
 			mpmm_block_allocator_free(allocator, ptr);
 		else
 			mpmm_block_allocator_free_shared(allocator, ptr);
@@ -1558,7 +1558,7 @@ MPMM_ATTR void* MPMM_CALL mpmm_lcache_malloc(size_t size, mpmm_flags flags)
 {
 	void* r = NULL;
 	mpmm_chunk_list* bin = mpmm_lcache_find_bin(size);
-	if (bin != NULL)
+	MPMM_LIKELY_IF(bin != NULL)
 		r = mpmm_chunk_list_pop(bin);
 	MPMM_UNLIKELY_IF(r == NULL && (flags & MPMM_ENABLE_FALLBACK))
 		r = backend_malloc(size);
@@ -1569,7 +1569,6 @@ MPMM_ATTR void MPMM_CALL mpmm_lcache_free(void* ptr, size_t size)
 {
 	mpmm_chunk_list* bin = mpmm_lcache_insert_bin(size);
 	MPMM_INVARIANT(bin != NULL);
-	mpmm_backend_purge((uint8_t*)ptr + page_size, size - page_size);
 	mpmm_chunk_list_push(bin, ptr);
 }
 
