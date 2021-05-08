@@ -264,7 +264,7 @@ namespace mpmm
 #include <stdalign.h>
 #endif
 
-#if __STDC_NO_ATOMICS__
+#if !__STDC_NO_ATOMICS__
 #include <stdatomic.h>
 #else
 #error "MPMM: This compiler doesn't support C11 standard atomics via the <stdatomic.h> header."
