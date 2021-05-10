@@ -328,6 +328,8 @@ namespace mpmm
 #elif defined(__arm__)
 #define MPMM_SPIN_WAIT __yield()
 #endif
+#define MPMM_PURE __attribute__((pure))
+#define MPMM_ULTRAPURE __attribute__((pure))
 #define MPMM_PREFETCH(PTR) __builtin_prefetch((PTR), 1, 3)
 #define MPMM_EXPECT(CONDITION, VALUE) __builtin_expect((CONDITION), (VALUE))
 #define MPMM_LIKELY_IF(CONDITION) if (MPMM_EXPECT(CONDITION, 1))
@@ -355,6 +357,8 @@ namespace mpmm
 #define MPMM_SPIN_WAIT __yield()
 #define MPMM_PREFETCH(PTR) __prefetch((PTR))
 #endif
+#define MPMM_PURE
+#define MPMM_ULTRAPURE
 #define MPMM_EXPECT(CONDITION, VALUE) (CONDITION)
 #define MPMM_LIKELY_IF(CONDITION) if ((CONDITION))
 #define MPMM_UNLIKELY_IF(CONDITION) if ((CONDITION))
@@ -573,7 +577,7 @@ MPMM_INLINE_ALWAYS static void mpmm_sys_init()
 	tcache_buffer_size = tcache_small_bin_buffer_size * 2 + tcache_large_bin_buffer_size * 2;
 }
 
-MPMM_INLINE_ALWAYS static size_t mpmm_chunk_index_of(void* chunk)
+MPMM_ULTRAPURE MPMM_INLINE_ALWAYS static size_t mpmm_chunk_index_of(void* chunk)
 {
 	size_t mask = (size_t)chunk;
 	mask >>= chunk_size_log2;
@@ -743,7 +747,7 @@ typedef struct mpmm_intrusive_block_allocator
 	MPMM_SHARED_ATTR mpmm_atomic_mask_type marked_map[MPMM_BLOCK_ALLOCATOR_MASK_COUNT];
 } mpmm_intrusive_block_allocator;
 
-MPMM_INLINE_ALWAYS static size_t mpmm_chunk_size_of(size_t size)
+MPMM_ULTRAPURE MPMM_INLINE_ALWAYS static size_t mpmm_chunk_size_of(size_t size)
 {
 	size |= (size == 0);
 	size *= MPMM_BLOCK_ALLOCATOR_MAX_CAPACITY;
@@ -753,19 +757,19 @@ MPMM_INLINE_ALWAYS static size_t mpmm_chunk_size_of(size_t size)
 	return size;
 }
 
-MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_intrusive_block_allocator_index_of(void* buffer, size_t block_size, void* ptr)
+MPMM_PURE MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_intrusive_block_allocator_index_of(void* buffer, size_t block_size, void* ptr)
 {
 	MPMM_INVARIANT(buffer != NULL);
 	return ((uint_fast32_t)((uint8_t*)ptr - (uint8_t*)buffer)) / block_size;
 }
 
-MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_block_allocator_index_of(void* buffer, uint_fast8_t block_size_log2, void* ptr)
+MPMM_PURE MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_block_allocator_index_of(void* buffer, uint_fast8_t block_size_log2, void* ptr)
 {
 	MPMM_INVARIANT(buffer != NULL);
 	return ((uint_fast32_t)((uint8_t*)ptr - (uint8_t*)buffer)) >> block_size_log2;
 }
 
-MPMM_INLINE_ALWAYS static mpmm_bool mpmm_intrusive_block_allocator_owns(void* buffer, void* ptr, size_t block_size, mpmm_mask_type* free_map)
+MPMM_PURE MPMM_INLINE_ALWAYS static mpmm_bool mpmm_intrusive_block_allocator_owns(void* buffer, void* ptr, size_t block_size, mpmm_mask_type* free_map)
 {
 	MPMM_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)buffer || (uint8_t*)ptr >= (uint8_t*)buffer + mpmm_chunk_size_of(block_size))
 		return 0;
@@ -775,7 +779,7 @@ MPMM_INLINE_ALWAYS static mpmm_bool mpmm_intrusive_block_allocator_owns(void* bu
 	return !MPMM_BT(free_map[mask_index], bit_index);
 }
 
-MPMM_INLINE_ALWAYS static mpmm_bool mpmm_block_allocator_owns(void* buffer, void* ptr, size_t block_size_log2, mpmm_mask_type* free_map)
+MPMM_PURE MPMM_INLINE_ALWAYS static mpmm_bool mpmm_block_allocator_owns(void* buffer, void* ptr, size_t block_size_log2, mpmm_mask_type* free_map)
 {
 	MPMM_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)buffer || (uint8_t*)ptr >= (uint8_t*)buffer + mpmm_chunk_size_of((size_t)1 << block_size_log2))
 		return 0;
@@ -1248,7 +1252,7 @@ MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_tcache_block_allocator_of(v
 	return mpmm_tcache_find_allocator((void*)mask);
 }
 
-MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_tcache_size_class(size_t size)
+MPMM_PURE MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_tcache_size_class(size_t size)
 {
 	uint_fast8_t log2 = MPMM_LOG2(size);
 	uint_fast8_t limit = MPMM_SIZE_MAP_SIZE;
@@ -1461,7 +1465,7 @@ MPMM_ATTR void MPMM_CALL mpmm_init(const mpmm_init_options* options)
 	backend_init();
 	mpmm_lcache_init();
 #ifdef MPMM_32BIT
-	mpmm_tcache_common_init();
+	mpmm_tcache_lookup_init();
 #else
 	mpmm_init_flag = 1;
 #endif
