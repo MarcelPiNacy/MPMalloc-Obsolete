@@ -1431,9 +1431,11 @@ MPMM_ATTR void MPMM_CALL mpmm_trim_options_default(mpmm_trim_options* out_option
 MPMM_ATTR void MPMM_CALL mpmm_debugger_options_default(mpmm_debugger_options* out_options)
 {
 	out_options->context = NULL;
+#ifdef MPMM_DEBUG
 	out_options->message = mpmm_default_debugger_message_callback;
 	out_options->warning = mpmm_default_debugger_warning_callback;
 	out_options->error = mpmm_default_debugger_error_callback;
+#endif
 }
 
 MPMM_ATTR size_t MPMM_CALL mpmm_backend_required_alignment()
