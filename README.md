@@ -40,38 +40,41 @@ void        mpmm_debugger_options_default(mpmm_debugger_options* out_options);
 
 void        mpmm_init(const mpmm_init_options* options);
 mpmm_bool   mpmm_is_initialized();
-void        mpmm_reset();
+void        mpmm_cleanup();
+
+void        mpmm_thread_init();
+void        mpmm_thread_cleanup();
 
 void        mpmm_stats(mpmm_mem_stats* out_stats);
 void        mpmm_params(mpmm_global_params* out_params);
 
-void*       mpmm_malloc(size_t size);
+void*	    mpmm_malloc(size_t size);
 mpmm_bool   mpmm_resize(void* ptr, size_t old_size, size_t new_size);
-void*       mpmm_realloc(void* ptr, size_t old_size, size_t new_size);
+void*	    mpmm_realloc(void* ptr, size_t old_size, size_t new_size);
 void        mpmm_free(void* ptr, size_t size);
 size_t      mpmm_round_size(size_t size);
-size_t      mpmm_purge(uint64_t flags, void* param);
+size_t      mpmm_purge(mpmm_flags flags, void* param);
 size_t      mpmm_trim(const mpmm_trim_options* options);
 
-void*       mpmm_tcache_malloc(size_t size, uint64_t flags);
+void*	    mpmm_tcache_malloc(size_t size, mpmm_flags flags);
 void        mpmm_tcache_free(void* ptr, size_t size);
 size_t      mpmm_tcache_round_size(size_t size);
-size_t      mpmm_tcache_flush(uint64_t flags, void* param);
+size_t      mpmm_tcache_flush(mpmm_flags flags, void* param);
 size_t      mpmm_tcache_min_size();
 size_t      mpmm_tcache_max_size();
 
-void*       mpmm_lcache_malloc(size_t size, uint64_t flags);
+void*    	mpmm_lcache_malloc(size_t size, mpmm_flags flags);
 void        mpmm_lcache_free(void* ptr, size_t size);
 size_t      mpmm_lcache_round_size(size_t size);
-size_t      mpmm_lcache_flush(uint64_t flags, void* param);
+size_t      mpmm_lcache_flush(mpmm_flags flags, void* param);
 size_t      mpmm_lcache_min_size();
 size_t      mpmm_lcache_max_size();
 
-void*       mpmm_persistent_malloc(size_t size);
-void        mpmm_persistent_reset();
+void*	    mpmm_persistent_malloc(size_t size);
+void        mpmm_persistent_cleanup();
 
 size_t      mpmm_backend_required_alignment();
-void*       mpmm_backend_malloc(size_t size);
+void*	    mpmm_backend_malloc(size_t size);
 mpmm_bool   mpmm_backend_resize(void* ptr, size_t old_size, size_t new_size);
 void        mpmm_backend_free(void* ptr, size_t size);
 void        mpmm_backend_purge(void* ptr, size_t size);
