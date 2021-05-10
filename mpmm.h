@@ -765,7 +765,6 @@ MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_block_allocator_index_of(void* buff
 	return ((uint_fast32_t)((uint8_t*)ptr - (uint8_t*)buffer)) >> block_size_log2;
 }
 
-#ifdef MPMM_DEBUG
 MPMM_INLINE_ALWAYS static mpmm_bool mpmm_intrusive_block_allocator_owns(void* buffer, void* ptr, size_t block_size, mpmm_mask_type* free_map)
 {
 	MPMM_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)buffer || (uint8_t*)ptr >= (uint8_t*)buffer + mpmm_chunk_size_of(block_size))
@@ -785,7 +784,6 @@ MPMM_INLINE_ALWAYS static mpmm_bool mpmm_block_allocator_owns(void* buffer, void
 	uint_fast32_t bit_index = index & MPMM_BLOCK_MASK_MOD_MASK;
 	return !MPMM_BT(free_map[mask_index], bit_index);
 }
-#endif
 
 MPMM_INLINE_ALWAYS static void mpmm_block_allocator_init(mpmm_block_allocator* self, uint_fast8_t block_size_log2, uint_fast8_t sc, size_t chunk_size, struct mpmm_tcache* owner, void* buffer)
 {
