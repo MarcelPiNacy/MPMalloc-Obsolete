@@ -376,12 +376,21 @@ namespace mpmm
 #define MPMM_EXPECT(CONDITION, VALUE) (CONDITION)
 #define MPMM_LIKELY_IF(CONDITION) if ((CONDITION))
 #define MPMM_UNLIKELY_IF(CONDITION) if ((CONDITION))
+#ifdef _M_ARM
+#define MPMM_POPCNT32(MASK) (uint_fast8_t)_CountOneBits((MASK))
+#define MPMM_POPCNT64(MASK) (uint_fast8_t)_CountOneBits64((MASK))
+#define MPMM_CTZ32(MASK) (uint_fast8_t)_CountLeadingZeros(_arm_rbit((MASK)))
+#define MPMM_CTZ64(MASK) (uint_fast8_t)_CountLeadingZeros64((((uint64_t)_arm_rbit((uint32_t)(MASK))) << 32) | (uint64_t)_arm_rbit(((uint32_t)(MASK)) >> 32))
+#define MPMM_CLZ32(MASK) (uint_fast8_t)_CountLeadingZeros((MASK))
+#define MPMM_CLZ64(MASK) (uint_fast8_t)_CountLeadingZeros64((MASK))
+#else
 #define MPMM_POPCNT32(MASK) (uint_fast8_t)__popcnt((MASK))
 #define MPMM_POPCNT64(MASK) (uint_fast8_t)__popcnt64((MASK))
 #define MPMM_CTZ32(MASK) (uint_fast8_t)_tzcnt_u32((MASK))
 #define MPMM_CTZ64(MASK) (uint_fast8_t)_tzcnt_u64((MASK))
 #define MPMM_CLZ32(MASK) (uint_fast8_t)_lzcnt_u32((MASK))
 #define MPMM_CLZ64(MASK) (uint_fast8_t)_lzcnt_u64((MASK))
+#endif
 #ifdef MPMM_DEBUG
 #define MPMM_INLINE_ALWAYS
 #define MPMM_INLINE_NEVER
