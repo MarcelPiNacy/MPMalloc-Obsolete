@@ -274,7 +274,7 @@ namespace mpmm
 #endif
 
 
-#define MPMM_IMPLEMENTATION
+
 #ifdef MPMM_IMPLEMENTATION
 
 #include <stdbool.h>
@@ -481,12 +481,10 @@ static_assert((MPMM_REDZONE_SIZE & ((UINTMAX_C(1) << MPMM_POINTER_SIZE_LOG2) - U
 #define MPMM_ATOMIC_SWAP_ACQ_UPTR(WHERE, VALUE)					__atomic_exchange_n((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_ACQUIRE)
 #define MPMM_ATOMIC_CAS_ACQ_UPTR(WHERE, EXPECTED, VALUE)		__atomic_compare_exchange_n((mpmm_atomic_size_t*)(WHERE), (size_t*)(EXPECTED), (size_t)(VALUE), 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MPMM_ATOMIC_CAS_REL_UPTR(WHERE, EXPECTED, VALUE)		__atomic_compare_exchange_n((mpmm_atomic_size_t*)(WHERE), (size_t*)(EXPECTED), (size_t)(VALUE), 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED)
-#define MPMM_ATOMIC_WCAS_ACQ_UPTR(WHERE, EXPECTED, VALUE)		__atomic_compare_exchange_n((mpmm_atomic_size_t*)(WHERE), (size_t*)(EXPECTED), (size_t)(VALUE), 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
-#define MPMM_ATOMIC_WCAS_REL_UPTR(WHERE, EXPECTED, VALUE)		__atomic_compare_exchange_n((mpmm_atomic_size_t*)(WHERE), (size_t*)(EXPECTED), (size_t)(VALUE), 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)
-#define MPMM_ATOMIC_FETCH_ADD_ACQ(WHERE, VALUE)					__atomic_fetch_add((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_ACQUIRE)
-#define MPMM_ATOMIC_FETCH_ADD_REL(WHERE, VALUE)					__atomic_fetch_add((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_RELEASE)
-#define MPMM_ATOMIC_FETCH_SUB_ACQ(WHERE, VALUE)					__atomic_fetch_sub((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_ACQUIRE)
-#define MPMM_ATOMIC_FETCH_SUB_REL(WHERE, VALUE)					__atomic_fetch_sub((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_RELEASE)
+#define MPMM_ATOMIC_CAS_WEAK_ACQ_UPTR(WHERE, EXPECTED, VALUE)	__atomic_compare_exchange_n((mpmm_atomic_size_t*)(WHERE), (size_t*)(EXPECTED), (size_t)(VALUE), 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
+#define MPMM_ATOMIC_CAS_WEAK_REL_UPTR(WHERE, EXPECTED, VALUE)	__atomic_compare_exchange_n((mpmm_atomic_size_t*)(WHERE), (size_t*)(EXPECTED), (size_t)(VALUE), 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)
+#define MPMM_ATOMIC_FAA_ACQ(WHERE, VALUE)						__atomic_fetch_add((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_ACQUIRE)
+#define MPMM_ATOMIC_FAS_REL(WHERE, VALUE)						__atomic_fetch_sub((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_RELEASE)
 #define MPMM_ATOMIC_BIT_SET_REL(WHERE, VALUE)					(void)__atomic_fetch_or((mpmm_atomic_size_t*)(WHERE), (size_t)1 << (uint_fast8_t)(VALUE), __ATOMIC_RELEASE)
 #elif defined(MPMM_MSVC)
 // I'd like to give special thanks to the visual studio devteam for being more than 10 years ahead of the competition in not adding support to the C11 standard to their compiler.
@@ -518,13 +516,13 @@ typedef volatile mpmm_msvc_size_t mpmm_msvc_atomic_size_t;
 #define MPMM_ATOMIC_SWAP_ACQ_UPTR(WHERE, VALUE)					MPMM_MSVC_ATOMIC_ACQ(_InterlockedExchange)((mpmm_msvc_atomic_size_t*)(WHERE), (mpmm_msvc_size_t)(VALUE))
 #define MPMM_ATOMIC_CAS_ACQ_UPTR(WHERE, EXPECTED, VALUE)		(MPMM_MSVC_ATOMIC_ACQ(_InterlockedCompareExchange)((mpmm_msvc_atomic_size_t*)(WHERE), *(const mpmm_msvc_size_t*)(EXPECTED), (mpmm_msvc_size_t)(VALUE)) == *(const mpmm_msvc_size_t*)EXPECTED)
 #define MPMM_ATOMIC_CAS_REL_UPTR(WHERE, EXPECTED, VALUE)		(MPMM_MSVC_ATOMIC_REL(_InterlockedCompareExchange)((mpmm_msvc_atomic_size_t*)(WHERE), *(const mpmm_msvc_size_t*)(EXPECTED), (mpmm_msvc_size_t)(VALUE)) == *(const mpmm_msvc_size_t*)EXPECTED)
-#define MPMM_ATOMIC_WCAS_ACQ_UPTR(WHERE, EXPECTED, VALUE)		(MPMM_MSVC_ATOMIC_ACQ(_InterlockedCompareExchange)((mpmm_msvc_atomic_size_t*)(WHERE), *(const mpmm_msvc_size_t*)(EXPECTED), (mpmm_msvc_size_t)(VALUE)) == *(const mpmm_msvc_size_t*)EXPECTED)
-#define MPMM_ATOMIC_WCAS_REL_UPTR(WHERE, EXPECTED, VALUE)		(MPMM_MSVC_ATOMIC_REL(_InterlockedCompareExchange)((mpmm_msvc_atomic_size_t*)(WHERE), *(const mpmm_msvc_size_t*)(EXPECTED), (mpmm_msvc_size_t)(VALUE)) == *(const mpmm_msvc_size_t*)EXPECTED)
-#define MPMM_ATOMIC_FETCH_ADD_ACQ(WHERE, VALUE)					(size_t)MPMM_MSVC_ATOMIC_ACQ(_InterlockedExchangeAdd)((mpmm_msvc_atomic_size_t*)(WHERE), (mpmm_msvc_size_t)(VALUE))
-#define MPMM_ATOMIC_FETCH_ADD_REL(WHERE, VALUE)					(size_t)MPMM_MSVC_ATOMIC_REL(_InterlockedExchangeAdd)((mpmm_msvc_atomic_size_t*)(WHERE), (mpmm_msvc_size_t)(VALUE))
-#define MPMM_ATOMIC_FETCH_SUB_ACQ(WHERE, VALUE)					(size_t)MPMM_MSVC_ATOMIC_ACQ(_InterlockedExchangeAdd)((mpmm_msvc_atomic_size_t*)(WHERE), -(mpmm_msvc_size_t)(VALUE))
-#define MPMM_ATOMIC_FETCH_SUB_REL(WHERE, VALUE)					(size_t)MPMM_MSVC_ATOMIC_REL(_InterlockedExchangeAdd)((mpmm_msvc_atomic_size_t*)(WHERE), -(mpmm_msvc_size_t)(VALUE))
+#define MPMM_ATOMIC_CAS_WEAK_ACQ_UPTR(WHERE, EXPECTED, VALUE)	(MPMM_MSVC_ATOMIC_ACQ(_InterlockedCompareExchange)((mpmm_msvc_atomic_size_t*)(WHERE), *(const mpmm_msvc_size_t*)(EXPECTED), (mpmm_msvc_size_t)(VALUE)) == *(const mpmm_msvc_size_t*)EXPECTED)
+#define MPMM_ATOMIC_CAS_WEAK_REL_UPTR(WHERE, EXPECTED, VALUE)	(MPMM_MSVC_ATOMIC_REL(_InterlockedCompareExchange)((mpmm_msvc_atomic_size_t*)(WHERE), *(const mpmm_msvc_size_t*)(EXPECTED), (mpmm_msvc_size_t)(VALUE)) == *(const mpmm_msvc_size_t*)EXPECTED)
+#define MPMM_ATOMIC_FAA_ACQ(WHERE, VALUE)						(size_t)MPMM_MSVC_ATOMIC_ACQ(_InterlockedExchangeAdd)((mpmm_msvc_atomic_size_t*)(WHERE), (mpmm_msvc_size_t)(VALUE))
+#define MPMM_ATOMIC_FAS_REL(WHERE, VALUE)						(size_t)MPMM_MSVC_ATOMIC_REL(_InterlockedExchangeAdd)((mpmm_msvc_atomic_size_t*)(WHERE), -(mpmm_msvc_size_t)(VALUE))
 #define MPMM_ATOMIC_BIT_SET_REL(WHERE, VALUE)					(void)MPMM_MSVC_ATOMIC_REL(_interlockedbittestandset)((mpmm_msvc_atomic_size_t*)(WHERE), (uint_fast8_t)(VALUE))
+#define MPMM_ATOMIC_WIDE_CAS_WEAK_ACQ(WHERE, EXPECTED, VALUE)	MPMM_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(_InterlockedCompareExchange128)((WHERE), ((const mpmm_msvc_size_t*)(EXPECTED))[1], ((const mpmm_msvc_size_t*)(EXPECTED))[0], &(DESIRED))
+#define MPMM_ATOMIC_WIDE_CAS_WEAK_REL(WHERE, EXPECTED, VALUE)	MPMM_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(_InterlockedCompareExchange128)((WHERE), ((const mpmm_msvc_size_t*)(EXPECTED))[1], ((const mpmm_msvc_size_t*)(EXPECTED))[0], &(DESIRED))
 #endif
 
 #define MPMM_ATOMIC_LOAD_ACQ_PTR(WHERE)							(void*)MPMM_ATOMIC_LOAD_ACQ_UPTR((mpmm_atomic_size_t*)WHERE)
@@ -532,8 +530,8 @@ typedef volatile mpmm_msvc_size_t mpmm_msvc_atomic_size_t;
 #define MPMM_ATOMIC_SWAP_ACQ_PTR(WHERE, VALUE)					(void*)MPMM_ATOMIC_SWAP_ACQ_UPTR((mpmm_atomic_size_t*)WHERE, (size_t)VALUE)
 #define MPMM_ATOMIC_CAS_ACQ_PTR(WHERE, EXPECTED, VALUE)			MPMM_ATOMIC_CAS_ACQ_UPTR((mpmm_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
 #define MPMM_ATOMIC_CAS_REL_PTR(WHERE, EXPECTED, VALUE)			MPMM_ATOMIC_CAS_REL_UPTR((mpmm_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
-#define MPMM_ATOMIC_WCAS_ACQ_PTR(WHERE, EXPECTED, VALUE)		MPMM_ATOMIC_WCAS_ACQ_UPTR((mpmm_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
-#define MPMM_ATOMIC_WCAS_REL_PTR(WHERE, EXPECTED, VALUE)		MPMM_ATOMIC_WCAS_REL_UPTR((mpmm_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
+#define MPMM_ATOMIC_WCAS_ACQ_PTR(WHERE, EXPECTED, VALUE)		MPMM_ATOMIC_CAS_WEAK_ACQ_UPTR((mpmm_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
+#define MPMM_ATOMIC_WCAS_REL_PTR(WHERE, EXPECTED, VALUE)		MPMM_ATOMIC_CAS_WEAK_REL_UPTR((mpmm_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
 
 // ================================================================
 //	SIZE CLASS MAPPING FUNCTIONS
@@ -748,7 +746,7 @@ MPMM_INLINE_ALWAYS static void mpmm_chunk_list_push(mpmm_chunk_list*head, void* 
 		prior = MPMM_ATOMIC_LOAD_ACQ_UPTR(head);
 		new_head->next = (mpmm_flist_node*)(prior & ~chunk_size_mask);
 		desired = (size_t)new_head | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
-		MPMM_LIKELY_IF(MPMM_ATOMIC_WCAS_REL_UPTR(head, &prior, desired))
+		MPMM_LIKELY_IF(MPMM_ATOMIC_CAS_WEAK_REL_UPTR(head, &prior, desired))
 			break;
 	}
 }
@@ -763,7 +761,7 @@ MPMM_INLINE_ALWAYS static void* mpmm_chunk_list_pop(mpmm_chunk_list* head)
 		MPMM_UNLIKELY_IF(ptr == NULL)
 			return NULL;
 		desired = (size_t)ptr->next | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
-		MPMM_LIKELY_IF(MPMM_ATOMIC_WCAS_ACQ_UPTR(head, &prior, desired))
+		MPMM_LIKELY_IF(MPMM_ATOMIC_CAS_WEAK_ACQ_UPTR(head, &prior, desired))
 			return ptr;
 	}
 }
@@ -774,15 +772,6 @@ MPMM_ULTRAPURE MPMM_INLINE_ALWAYS static size_t mpmm_chunk_index_of(void* chunk)
 	mask >>= chunk_size_log2;
 	return mask;
 }
-
-typedef struct mpmm_tcache
-{
-	struct mpmm_intrusive_block_allocator** bins;
-	mpmm_rlist* recovered;
-	struct mpmm_block_allocator** bins_large;
-	mpmm_rlist* recovered_large;
-	mpmm_atomic_bool in_use;
-} mpmm_tcache;
 
 // ================================================================
 //	BLOCK ALLOCATOR
@@ -1053,10 +1042,10 @@ typedef MPMM_ATOMIC(persistent_node*) persistent_allocator;
 
 MPMM_INLINE_ALWAYS static void* mpmm_persistent_node_malloc(persistent_node* self, size_t size)
 {
-	size_t prior = MPMM_ATOMIC_FETCH_ADD_ACQ(&self->bump, size);
+	size_t prior = MPMM_ATOMIC_FAA_ACQ(&self->bump, size);
 	MPMM_LIKELY_IF(prior + size <= chunk_size)
 		return (uint8_t*)self + prior;
-	(void)MPMM_ATOMIC_FETCH_SUB_REL(&self->bump, size);
+	(void)MPMM_ATOMIC_FAS_REL(&self->bump, size);
 	return NULL;
 }
 
