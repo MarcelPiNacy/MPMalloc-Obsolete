@@ -864,7 +864,7 @@ MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc_impl(persistent_allocator* allo
 	n->bump = offset;
 	MPMM_SPIN_LOOP
 	{
-		(void)memcpy(&prior, &allocator, sizeof(void*));
+		(void)memcpy(&prior, (const void*)allocator, sizeof(void*));
 		MPMM_ATOMIC_ACQUIRE_FENCE;
 		n->next = prior;
 		MPMM_LIKELY_IF(MPMM_ATOMIC_WCAS_ACQ_PTR(allocator, &prior, n))
