@@ -488,8 +488,9 @@ static_assert((MPMM_REDZONE_SIZE & ((UINTMAX_C(1) << MPMM_POINTER_SIZE_LOG2) - U
 #define MPMM_ATOMIC_FAA_ACQ(WHERE, VALUE)						__atomic_fetch_add((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_ACQUIRE)
 #define MPMM_ATOMIC_FAS_REL(WHERE, VALUE)						__atomic_fetch_sub((mpmm_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_RELEASE)
 #define MPMM_ATOMIC_BIT_SET_REL(WHERE, VALUE)					(void)__atomic_fetch_or((mpmm_atomic_size_t*)(WHERE), (size_t)1 << (uint_fast8_t)(VALUE), __ATOMIC_RELEASE)
-#define MPMM_WIDE_CAS_ACQ(WHERE, EXPECTED, VALUE)				__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
-#define MPMM_WIDE_CAS_REL(WHERE, EXPECTED, VALUE)				__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
+#define MPMM_ATOMIC_ACQUIRE_FENCE								__atomic_thread_fence(__ATOMIC_ACQUIRE)
+#define MPMM_WIDE_CAS_ACQ(WHERE, EXPECTED, VALUE)				__atomic_compare_exchange((volatile __int128*)(WHERE), (__int128*)(EXPECTED), (__int128*)(VALUE), 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
+#define MPMM_WIDE_CAS_REL(WHERE, EXPECTED, VALUE)				__atomic_compare_exchange((volatile __int128*)(WHERE), (__int128*)(EXPECTED), (__int128*)(VALUE), 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #elif defined(MPMM_MSVC)
 // I'd like to give special thanks to the visual studio devteam for being more than 10 years ahead of the competition in not adding support to the C11 standard to their compiler.
 #define MPMM_ATOMIC(TYPE) TYPE volatile
@@ -540,8 +541,8 @@ MPMM_INLINE_ALWAYS static mpmm_bool mpmm_impl_cmpxchg16_acq(volatile mpmm_msvc_u
 	return MPMM_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(_InterlockedCompareExchange64)((volatile LONG64*)where, *(const LONG64*)desired, *(const LONG64*)expected) == *(const LONG64*)expected;
 #else
 	mpmm_msvc_uintptr_pair tmp;
-	(void)memcpy(&tmp, desired, 16);
-	return (mpmm_bool)MPMM_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, expected->b, expected->b, (LONG64*)&tmp);
+	(void)memcpy(&tmp, expected, 16);
+	return (mpmm_bool)MPMM_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, desired->b, desired->b, (LONG64*)&tmp);
 #endif
 }
 
@@ -551,8 +552,8 @@ MPMM_INLINE_ALWAYS static mpmm_bool mpmm_impl_cmpxchg16_rel(volatile mpmm_msvc_u
 	return MPMM_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(_InterlockedCompareExchange64)((volatile LONG64*)where, *(const LONG64*)desired, *(const LONG64*)expected) == *(const LONG64*)expected;
 #else
 	mpmm_msvc_uintptr_pair tmp;
-	(void)memcpy(&tmp, desired, 16);
-	return (mpmm_bool)MPMM_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, expected->b, expected->b, (LONG64*)&tmp);
+	(void)memcpy(&tmp, expected, 16);
+	return (mpmm_bool)MPMM_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, desired->b, desired->b, (LONG64*)&tmp);
 #endif
 }
 
@@ -808,6 +809,81 @@ MPMM_ULTRAPURE MPMM_INLINE_ALWAYS static size_t mpmm_chunk_index_of(void* chunk)
 }
 
 // ================================================================
+//	PERSISTENT
+// ================================================================
+
+typedef struct persistent_node
+{
+	MPMM_SHARED_ATTR
+		struct persistent_node* next;
+	mpmm_atomic_size_t bump;
+} persistent_node;
+
+typedef MPMM_ATOMIC(persistent_node*) persistent_allocator;
+
+MPMM_INLINE_ALWAYS static void* mpmm_persistent_node_malloc(persistent_node* self, size_t size)
+{
+	size_t prior = MPMM_ATOMIC_FAA_ACQ(&self->bump, size);
+	MPMM_LIKELY_IF(prior + size <= chunk_size)
+		return (uint8_t*)self + prior;
+	(void)MPMM_ATOMIC_FAS_REL(&self->bump, size);
+	return NULL;
+}
+
+static persistent_allocator internal_persistent_allocator;
+static persistent_allocator public_persistent_allocator;
+
+MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc_impl(persistent_allocator* allocator, size_t size)
+{
+	void* r;
+	persistent_node* n;
+	persistent_node* prior;
+	persistent_node* current;
+	size_t offset;
+
+	MPMM_UNLIKELY_IF(size >= chunk_size)
+		return mpmm_lcache_malloc(MPMM_ALIGN_ROUND(size, chunk_size), MPMM_ENABLE_FALLBACK);
+	current = (persistent_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(allocator);
+	do
+	{
+		prior = current;
+		for (n = prior; n != NULL; n = n->next)
+		{
+			r = mpmm_persistent_node_malloc(n, size);
+			MPMM_LIKELY_IF(r != NULL)
+				return r;
+		}
+		current = (persistent_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(allocator);
+	} while (prior != current);
+	n = (persistent_node*)mpmm_lcache_malloc(chunk_size, MPMM_ENABLE_FALLBACK);
+	MPMM_UNLIKELY_IF(n == NULL)
+		return NULL;
+	offset = MPMM_ALIGN_ROUND(sizeof(persistent_node), MPMM_CACHE_LINE_SIZE);
+	r = (uint8_t*)n + offset;
+	offset += size;
+	n->bump = offset;
+	MPMM_SPIN_LOOP
+	{
+		prior = (persistent_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(allocator);
+		n->next = prior;
+		MPMM_LIKELY_IF(MPMM_ATOMIC_WCAS_ACQ_PTR(allocator, &prior, n))
+			return r;
+	}
+}
+
+MPMM_ATTR void MPMM_CALL mpmm_persistent_cleanup_impl(persistent_allocator* allocator)
+{
+	persistent_node* next;
+	persistent_node* n;
+	n = (persistent_node*)MPMM_ATOMIC_SWAP_ACQ_PTR(allocator, NULL);
+	for (; n != NULL; n = next)
+	{
+		next = n->next;
+		backend_free(n, chunk_size);
+	}
+}
+
+// ================================================================
 //	THREAD CACHE POOL
 // ================================================================
 
@@ -822,6 +898,7 @@ typedef struct mpmm_tcache
 
 typedef struct mpmm_tcache_pool_head
 {
+	MPMM_ALIGNAS(sizeof(void*) * 2)
 	mpmm_tcache* head;
 	size_t generation;
 } mpmm_tcache_pool_head;
@@ -845,8 +922,47 @@ MPMM_INLINE_ALWAYS static mpmm_tcache* mpmm_tcache_acquire_fast()
 	return prior.head;
 }
 
+MPMM_INLINE_NEVER static mpmm_tcache* mpmm_tcache_acquire_slow()
+{
+	mpmm_tcache* r;
+	uint8_t* buffer;
+	buffer = (uint8_t*)mpmm_persistent_malloc_impl(&internal_persistent_allocator, sizeof(mpmm_tcache) + tcache_buffer_size);
+	MPMM_INVARIANT(buffer != NULL);
+	(void)memset(buffer, 0, sizeof(mpmm_tcache) + tcache_buffer_size);
+	r = (mpmm_tcache*)buffer;
+	buffer += sizeof(mpmm_tcache);
+	r->bins = (mpmm_intrusive_block_allocator**)buffer;
+	buffer += MPMM_TCACHE_SMALL_BIN_BUFFER_SIZE;
+	r->recovered = (mpmm_rlist*)buffer;
+	buffer += MPMM_TCACHE_SMALL_BIN_BUFFER_SIZE;
+	r->bins_large = (mpmm_block_allocator**)buffer;
+	buffer += tcache_large_bin_buffer_size;
+	r->recovered_large = (mpmm_rlist*)buffer;
+	return r;
+}
+
+MPMM_INLINE_ALWAYS static mpmm_tcache* mpmm_tcache_acquire()
+{
+	mpmm_tcache* r;
+	r = mpmm_tcache_acquire_fast();
+	MPMM_UNLIKELY_IF(r == NULL)
+		r = mpmm_tcache_acquire_slow();
+	return r;
+}
+
 MPMM_INLINE_ALWAYS static void mpmm_tcache_release(mpmm_tcache* tcache)
 {
+	mpmm_tcache_pool_head prior, desired;
+	desired.head = tcache;
+	MPMM_SPIN_LOOP
+	{
+		(void)memcpy(&prior, (const void*)&tcache_freelist, sizeof(void*) * 2);
+		MPMM_ATOMIC_ACQUIRE_FENCE;
+		tcache->next = prior.head;
+		desired.generation = prior.generation + 1;
+		MPMM_LIKELY_IF(MPMM_WIDE_CAS_ACQ(&tcache_freelist, &prior, &desired))
+			break;
+	}
 }
 
 // ================================================================
@@ -1104,79 +1220,8 @@ static mpmm_shared_counter used_memory;
 static mpmm_shared_counter total_memory;
 
 // ================================================================
-//	PERSISTENT
+//	64-BIT VAS CHUNK DIGITAL TREE
 // ================================================================
-
-typedef struct persistent_node
-{
-	MPMM_SHARED_ATTR
-	struct persistent_node* next;
-	mpmm_atomic_size_t bump;
-} persistent_node;
-
-typedef MPMM_ATOMIC(persistent_node*) persistent_allocator;
-
-MPMM_INLINE_ALWAYS static void* mpmm_persistent_node_malloc(persistent_node* self, size_t size)
-{
-	size_t prior = MPMM_ATOMIC_FAA_ACQ(&self->bump, size);
-	MPMM_LIKELY_IF(prior + size <= chunk_size)
-		return (uint8_t*)self + prior;
-	(void)MPMM_ATOMIC_FAS_REL(&self->bump, size);
-	return NULL;
-}
-
-static persistent_allocator internal_persistent_allocator;
-static persistent_allocator public_persistent_allocator;
-
-MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc_impl(persistent_allocator* allocator, size_t size)
-{
-	void* r;
-	persistent_node* n;
-	persistent_node* prior;
-	persistent_node* current;
-	size_t offset;
-
-	MPMM_UNLIKELY_IF(size >= chunk_size)
-		return mpmm_lcache_malloc(MPMM_ALIGN_ROUND(size, chunk_size), MPMM_ENABLE_FALLBACK);
-	current = (persistent_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(allocator);
-	do
-	{
-		prior = current;
-		for (n = prior; n != NULL; n = n->next)
-		{
-			r = mpmm_persistent_node_malloc(n, size);
-			MPMM_LIKELY_IF(r != NULL)
-				return r;
-		}
-		current = (persistent_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(allocator);
-	} while (prior != current);
-	n = (persistent_node*)mpmm_lcache_malloc(chunk_size, MPMM_ENABLE_FALLBACK);
-	MPMM_UNLIKELY_IF(n == NULL)
-		return NULL;
-	offset = MPMM_ALIGN_ROUND(sizeof(persistent_node), MPMM_CACHE_LINE_SIZE);
-	r = (uint8_t*)n + offset;
-	offset += size;
-	n->bump = offset;
-	MPMM_SPIN_LOOP
-	{
-		prior = (persistent_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(allocator);
-		n->next = prior;
-		MPMM_LIKELY_IF(MPMM_ATOMIC_WCAS_ACQ_PTR(allocator, &prior, n))
-			return r;
-	}
-}
-
-MPMM_ATTR void MPMM_CALL mpmm_persistent_cleanup_impl(persistent_allocator* allocator)
-{
-	persistent_node* next;
-	persistent_node* n;
-	n = (persistent_node*)MPMM_ATOMIC_SWAP_ACQ_PTR(allocator, NULL);
-	for (; n != NULL; n = next)
-	{
-		next = n->next;
-		backend_free(n, chunk_size);
-	}
-}
 
 #ifdef MPMM_64BIT
 #define MPMM_TRIE_ROOT_SIZE 256
@@ -1354,7 +1399,7 @@ MPMM_INLINE_ALWAYS static void mpmm_tcache_lookup_init()
 }
 #endif
 
-MPMM_TLS static mpmm_tcache this_thread_tcache;
+MPMM_TLS static mpmm_tcache* this_thread_tcache;
 
 MPMM_INLINE_ALWAYS static mpmm_block_allocator* mpmm_tcache_find_allocator(void* buffer)
 {
@@ -1404,6 +1449,8 @@ MPMM_PURE MPMM_INLINE_ALWAYS static uint_fast32_t mpmm_tcache_size_class(size_t 
 
 MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_small_slow(mpmm_tcache* tcache, size_t size, uint_fast8_t sc)
 {
+	MPMM_INVARIANT(this_thread_tcache != NULL);
+
 	void* r;
 	size_t k;
 	mpmm_intrusive_block_allocator* allocator;
@@ -1413,7 +1460,7 @@ MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_small_slow(mpmm_tcache* tcach
 	allocator = (mpmm_intrusive_block_allocator*)mpmm_malloc(k);
 	MPMM_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mpmm_intrusive_block_allocator_init(allocator, (uint_fast32_t)size, sc, k, &this_thread_tcache);
+	mpmm_intrusive_block_allocator_init(allocator, (uint_fast32_t)size, sc, k, this_thread_tcache);
 	r = mpmm_intrusive_block_allocator_malloc(allocator);
 	bin = tcache->bins + sc;
 	allocator->next = *bin;
@@ -1423,6 +1470,8 @@ MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_small_slow(mpmm_tcache* tcach
 
 MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_large_slow(mpmm_tcache* tcache, size_t size, uint_fast8_t sc)
 {
+	MPMM_INVARIANT(this_thread_tcache != NULL);
+
 	void* r;
 	void* buffer;
 	size_t k;
@@ -1436,7 +1485,7 @@ MPMM_INLINE_ALWAYS static void* mpmm_tcache_malloc_large_slow(mpmm_tcache* tcach
 	allocator = mpmm_tcache_insert_allocator(buffer);
 	MPMM_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mpmm_block_allocator_init(allocator, MPMM_LOG2(size), sc, k, &this_thread_tcache, buffer);
+	mpmm_block_allocator_init(allocator, MPMM_LOG2(size), sc, k, this_thread_tcache, buffer);
 	r = mpmm_block_allocator_malloc(allocator);
 	bin = tcache->bins_large + sc;
 	allocator->next = *bin;
@@ -1624,20 +1673,12 @@ MPMM_ATTR void MPMM_CALL mpmm_cleanup()
 
 MPMM_ATTR void MPMM_CALL mpmm_thread_init()
 {
-	uint8_t* buffer = (uint8_t*)mpmm_persistent_malloc_impl(&internal_persistent_allocator, tcache_buffer_size);
-	(void)memset(buffer, 0, tcache_buffer_size);
-	this_thread_tcache.bins = (mpmm_intrusive_block_allocator**)buffer;
-	buffer += MPMM_TCACHE_SMALL_BIN_BUFFER_SIZE;
-	this_thread_tcache.recovered = (mpmm_rlist*)buffer;
-	buffer += MPMM_TCACHE_SMALL_BIN_BUFFER_SIZE;
-	this_thread_tcache.bins_large = (mpmm_block_allocator**)buffer;
-	buffer += tcache_large_bin_buffer_size;
-	this_thread_tcache.recovered_large = (mpmm_rlist*)buffer;
+	this_thread_tcache = mpmm_tcache_acquire();
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_thread_cleanup()
 {
-
+	mpmm_tcache_release(this_thread_tcache);
 }
 
 MPMM_ATTR void MPMM_CALL mpmm_stats(mpmm_mem_stats* out_stats)
@@ -1709,13 +1750,14 @@ MPMM_ATTR size_t MPMM_CALL mpmm_trim(const mpmm_trim_options* options)
 
 MPMM_ATTR void* MPMM_CALL mpmm_tcache_malloc(size_t size, mpmm_flags flags)
 {
+	MPMM_INVARIANT(this_thread_tcache != NULL);
 	void* r;
 	uint_fast8_t sc;
 	sc = mpmm_tcache_size_class(size);
 	if (size <= page_size)
-		r = mpmm_tcache_malloc_small_fast(&this_thread_tcache, size, sc, flags);
+		r = mpmm_tcache_malloc_small_fast(this_thread_tcache, size, sc, flags);
 	else
-		r = mpmm_tcache_malloc_large_fast(&this_thread_tcache, size, sc, flags);
+		r = mpmm_tcache_malloc_large_fast(this_thread_tcache, size, sc, flags);
 	MPMM_DEBUG_JUNK_FILL(r, size);
 	return r;
 }
@@ -1729,7 +1771,7 @@ MPMM_ATTR void MPMM_CALL mpmm_tcache_free(void* ptr, size_t size)
 	MPMM_LIKELY_IF(size <= page_size)
 	{
 		intrusive_allocator = mpmm_intrusive_block_allocator_allocator_of(ptr, k);
-		MPMM_LIKELY_IF(intrusive_allocator->owner == &this_thread_tcache)
+		MPMM_LIKELY_IF(intrusive_allocator->owner == this_thread_tcache)
 			mpmm_intrusive_block_allocator_free(intrusive_allocator, ptr);
 		else
 			mpmm_intrusive_block_allocator_free_shared(intrusive_allocator, ptr);
@@ -1737,7 +1779,7 @@ MPMM_ATTR void MPMM_CALL mpmm_tcache_free(void* ptr, size_t size)
 	else
 	{
 		allocator = mpmm_tcache_block_allocator_of(ptr);
-		MPMM_LIKELY_IF(allocator->owner == &this_thread_tcache)
+		MPMM_LIKELY_IF(allocator->owner == this_thread_tcache)
 			mpmm_block_allocator_free(allocator, ptr);
 		else
 			mpmm_block_allocator_free_shared(allocator, ptr);
