@@ -864,7 +864,8 @@ MPMM_ATTR void* MPMM_CALL mpmm_persistent_malloc_impl(persistent_allocator* allo
 	n->bump = offset;
 	MPMM_SPIN_LOOP
 	{
-		prior = (persistent_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(allocator);
+		(void)memcpy(&prior, &allocator, sizeof(void*));
+		MPMM_ATOMIC_ACQUIRE_FENCE;
 		n->next = prior;
 		MPMM_LIKELY_IF(MPMM_ATOMIC_WCAS_ACQ_PTR(allocator, &prior, n))
 			return r;
@@ -960,7 +961,7 @@ MPMM_INLINE_ALWAYS static void mpmm_tcache_release(mpmm_tcache* tcache)
 		MPMM_ATOMIC_ACQUIRE_FENCE;
 		tcache->next = prior.head;
 		desired.generation = prior.generation + 1;
-		MPMM_LIKELY_IF(MPMM_WIDE_CAS_ACQ(&tcache_freelist, &prior, &desired))
+		MPMM_LIKELY_IF(MPMM_WIDE_CAS_REL(&tcache_freelist, &prior, &desired))
 			break;
 	}
 }
@@ -1149,7 +1150,8 @@ MPMM_INLINE_NEVER static void mpmm_generic_block_allocator_recover(mpmm_atomic_b
 	desired = (mpmm_flist_node*)self;
 	MPMM_SPIN_LOOP
 	{
-		desired->next = (mpmm_flist_node*)MPMM_ATOMIC_LOAD_ACQ_PTR(recovered);
+		memcpy(&desired->next, &recovered, sizeof(void*));
+		MPMM_ATOMIC_ACQUIRE_FENCE;
 		MPMM_LIKELY_IF(MPMM_ATOMIC_WCAS_REL_PTR(recovered, &desired->next, desired))
 			break;
 	}
