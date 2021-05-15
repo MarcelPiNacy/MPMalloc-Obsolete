@@ -77,6 +77,9 @@ typedef _Bool mp_bool;
 #define MP_EXTERN_C_END
 #endif
 
+#define MP_FALSE ((mp_bool)0)
+#define MP_TRUE ((mp_bool)1)
+
 MP_EXTERN_C_BEGIN
 typedef enum mp_malloc_flag_bits
 {
@@ -282,11 +285,6 @@ namespace mpmm
 
 
 #ifdef MP_IMPLEMENTATION
-#include <stdbool.h>
-
-#define MP_FALSE (mp_bool)0
-#define MP_TRUE (mp_bool)1
-
 #if UINT32_MAX == UINTPTR_MAX
 #define MP_32BIT
 #define MP_PTR_SIZE 4ULL
@@ -298,6 +296,8 @@ namespace mpmm
 #define MP_PTR_SIZE_LOG2 3
 #define MP_DPTR_SIZE 16ULL
 #endif
+
+#define MP_PTR_SIZE_MASK (MP_PTR_SIZE - 1)
 
 #ifndef MP_STRING_JOIN
 #define MP_STRING_JOIN(LHS, RHS) LHS##RHS
@@ -355,6 +355,13 @@ namespace mpmm
 #define MP_EXPECT(CONDITION, VALUE) __builtin_expect((long)(CONDITION), (VALUE))
 #define MP_LIKELY_IF(CONDITION) if (MP_EXPECT(CONDITION, MP_TRUE))
 #define MP_UNLIKELY_IF(CONDITION) if (MP_EXPECT(CONDITION, MP_FALSE))
+#ifdef __clang__
+#define MP_ROR_32(MASK, COUNT) (uint32_t)__builtin_rotateright32((MASK), (COUNT))
+#define MP_ROL_32(MASK, COUNT) (uint32_t)__builtin_rotateleft32((MASK), (COUNT))
+#else
+#define MP_ROR_32(MASK, COUNT) (uint32_t)((MASK) << (COUNT) | ((MASK) >> (32 - (COUNT)))
+#define MP_ROL_32(MASK, COUNT) (uint32_t)((MASK) >> (COUNT) | ((MASK) >> (32 - (COUNT)))
+#endif
 #define MP_POPCOUNT_32(MASK) __builtin_popcount((MASK))
 #define MP_POPCOUNT_64(MASK) __builtin_popcountll((MASK))
 #define MP_CTZ_32(MASK) __builtin_ctz((MASK))
@@ -395,6 +402,8 @@ namespace mpmm
 #define MP_CLZ_32(MASK) (uint_fast8_t)_CountLeadingZeros((MASK))
 #define MP_CLZ_64(MASK) (uint_fast8_t)_CountLeadingZeros64((MASK))
 #else
+#define MP_ROR_32(MASK, COUNT) (uint32_t)_rotr((MASK), (COUNT))
+#define MP_ROL_32(MASK, COUNT) (uint32_t)_rotl((MASK), (COUNT))
 #define MP_POPCOUNT_32(MASK) (uint_fast8_t)__popcnt((MASK))
 #define MP_POPCOUNT_64(MASK) (uint_fast8_t)__popcnt64((MASK))
 #define MP_CTZ_32(MASK) (uint_fast8_t)_tzcnt_u32((MASK))
@@ -449,8 +458,6 @@ namespace mpmm
 #define MP_BS(MASK, INDEX) ((MASK) |= ((size_t)1 << (INDEX)))
 #define MP_BR(MASK, INDEX) ((MASK) &= ~((size_t)1 << (INDEX)))
 #define MP_ARRAY_SIZE(ARRAY) (sizeof(ARRAY) / sizeof(ARRAY[0]))
-#define MP_BLOCK_MASK_BIT_SIZE_LOG2 (MP_PTR_SIZE == 4 ? 5 : 6)
-#define MP_BLOCK_MASK_MOD_MASK ((1UI8 << MP_BLOCK_MASK_BIT_SIZE_LOG2) - 1UI8)
 #define MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY (MP_CACHE_LINE_SIZE * 8)
 #define MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT (MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY / (8 * MP_PTR_SIZE))
 #define MP_BLOCK_ALLOCATOR_MAX_CAPACITY (MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY / 2)
@@ -571,7 +578,7 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 #define MP_NON_ATOMIC_STORE_UPTR(WHERE, VALUE) *((size_t*)(WHERE)) = (VALUE)
 
 // ================================================================
-//	MPMM MAIN DATA TYPES
+//	MPMALLOC MAIN DATA TYPES
 // ================================================================
 
 typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
@@ -702,12 +709,12 @@ static size_t tcache_large_bin_buffer_size;
 static size_t tcache_buffer_size;
 static uint8_t page_size_log2;
 static uint8_t chunk_size_log2;
-#ifdef MP_DEBUG
-static mp_debugger_options debugger;
-static bool mp_debug_enabled_flag;
-#endif
 #ifdef MP_64BIT
 static bool mp_init_flag;
+#endif
+#ifdef MP_DEBUG
+static mp_debugger_options debugger;
+static bool mp_debugger_enabled_flag;
 #endif
 
 MP_INLINE_ALWAYS static void mp_sys_init()
@@ -731,6 +738,65 @@ MP_INLINE_ALWAYS static void mp_sys_init()
 	MP_INVARIANT(chunk_size >= (32 * 4096));
 	tcache_large_bin_buffer_size = MP_PTR_SIZE * ((size_t)chunk_size_log2 - page_size_log2);
 	tcache_buffer_size = (MP_TCACHE_SMALL_BIN_BUFFER_SIZE + tcache_large_bin_buffer_size) * 2;
+}
+
+// ================================================================
+//	MISCELLANEOUS
+// ================================================================
+
+MP_INLINE_ALWAYS static void mp_lazy_zero_fill(void* ptr, size_t size)
+{
+#if MP_CACHE_LINE_SIZE
+#endif
+}
+
+// ================================================================
+//	DEBUG FUNCTIONS
+// ================================================================
+
+#ifdef MP_DEBUG
+#include <stdio.h>
+static void mp_default_debugger_message_callback(void* context, const char* message, size_t size)
+{
+	MP_INVARIANT(message != NULL);
+	(void)fwrite(message, 1, size, stdout);
+}
+
+static void mp_default_debugger_warning_callback(void* context, const char* message, size_t size)
+{
+	MP_INVARIANT(message != NULL);
+	(void)fwrite(message, 1, size, stdout);
+}
+
+static void mp_default_debugger_error_callback(void* context, const char* message, size_t size)
+{
+	MP_INVARIANT(message != NULL);
+	(void)fwrite(message, 1, size, stderr);
+}
+#endif
+
+MP_INLINE_ALWAYS static void mp_init_redzone(void* buffer, size_t size)
+{
+#ifdef MP_CHECK_OVERFLOW
+	buffer = (uint8_t*)buffer + size;
+	(void)memset(buffer, MP_REDZONE_VALUE, MP_REDZONE_SIZE);
+#endif
+}
+
+MP_INLINE_ALWAYS static mp_bool mp_check_redzone(const void* buffer, size_t size)
+{
+#ifdef MP_CHECK_OVERFLOW
+	const size_t* ptr;
+	size_t expected, i;
+	const size_t count = MP_REDZONE_SIZE >> MP_PTR_SIZE_LOG2;
+	buffer = (const uint8_t*)buffer + size;
+	ptr = (const size_t*)buffer;
+	(void)memset(&expected, MP_REDZONE_VALUE, MP_PTR_SIZE);
+	for (i = 0; i != count; ++i)
+		MP_UNLIKELY_IF(ptr[i] != expected)
+		return MP_FALSE;
+#endif
+	return MP_TRUE;
 }
 
 // ================================================================
@@ -824,6 +890,22 @@ static mp_fn_malloc		backend_malloc	= mp_os_malloc;
 static mp_fn_resize		backend_resize	= mp_os_resize;
 static mp_fn_free		backend_free	= mp_os_free;
 static mp_fn_purge		backend_purge	= mp_os_purge;
+
+// ================================================================
+//	RANDOM
+// ================================================================
+
+typedef uint32_t mp_romu_mono32;
+
+#define MP_ROMU_MONO32_INIT(SEED) (((SEED) & 0x1fffffffu) + 1156979152u)
+
+MP_INLINE_ALWAYS static uint_fast16_t mp_romu_mono32_get(mp_romu_mono32* state)
+{
+	uint_fast16_t r = (uint_fast16_t)(*state & 0xffff);
+	*state *= 3611795771U;
+	*state = MP_ROL_32(*state, 12);
+	return r;
+}
 
 // ================================================================
 //	LOCK-FREE CHUNK FREE LIST
@@ -1056,8 +1138,8 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_block_allocator_owns(mp_block_allocat
 	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator->buffer + mp_chunk_size_of_large((size_t)1 << allocator->block_size_log2))
 		return MP_FALSE;
 	index = mp_block_allocator_index_of(allocator, ptr);
-	mask_index = index >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_index = index & MP_BLOCK_MASK_MOD_MASK;
+	mask_index = index >> MP_PTR_SIZE_LOG2;
+	bit_index = index & MP_PTR_SIZE_MASK;
 	return !MP_BT(allocator->free_map[mask_index], bit_index);
 }
 
@@ -1070,8 +1152,8 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_block_allocator_intrusive_owns(mp_blo
 	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator + mp_chunk_size_of_small(allocator->block_size))
 		return MP_FALSE;
 	index = mp_block_allocator_intrusive_index_of(allocator, ptr);
-	mask_index = index >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_index = index & MP_BLOCK_MASK_MOD_MASK;
+	mask_index = index >> MP_PTR_SIZE_LOG2;
+	bit_index = index & MP_PTR_SIZE_MASK;
 	return !MP_BT(allocator->free_map[mask_index], bit_index);
 }
 
@@ -1089,8 +1171,8 @@ MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocat
 	allocator->buffer = (uint8_t*)buffer;
 	MP_NON_ATOMIC_SET(allocator->linked);
 	(void)memset(allocator->free_map, 0, MP_CACHE_LINE_SIZE / 2);
-	mask_count = allocator->free_count >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_count = allocator->free_count & MP_BLOCK_MASK_MOD_MASK;
+	mask_count = allocator->free_count >> MP_PTR_SIZE_LOG2;
+	bit_count = allocator->free_count & MP_PTR_SIZE_MASK;
 	(void)memset(allocator->free_map, 0xff, mask_count * MP_PTR_SIZE);
 	allocator->free_map[mask_count] |= ((size_t)1 << bit_count) - (size_t)1;
 	(void)memset((void*)allocator->marked_map, 0, MP_CACHE_LINE_SIZE / 2);
@@ -1099,35 +1181,29 @@ MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocat
 MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocator_intrusive* allocator, uint_fast32_t block_size, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner)
 {
 	uint_fast32_t reserved_count, capacity, mask_count, bit_count;
-	size_t mask;
 	MP_INVARIANT(allocator != NULL);
 	allocator->next = NULL;
 	capacity = (uint_fast32_t)(chunk_size / block_size);
-	MP_UNLIKELY_IF(capacity > MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY)
-		capacity = MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY;
 	reserved_count = (sizeof(mp_block_allocator_intrusive) + block_size - 1) / block_size;
 	MP_INVARIANT(reserved_count >= 1);
 	MP_INVARIANT(reserved_count < capacity);
 	capacity -= reserved_count;
+	MP_UNLIKELY_IF(capacity > MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY)
+		capacity = MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - reserved_count;
 	allocator->free_count = capacity;
 	allocator->block_size = block_size;
 	allocator->size_class = sc;
 	allocator->owner = owner;
 	MP_NON_ATOMIC_SET(allocator->linked);
-	(void)memset(allocator->free_map, 0, MP_CACHE_LINE_SIZE);
+	(void)memset(allocator->free_map, 0xff, MP_CACHE_LINE_SIZE);
 	(void)memset((void*)allocator->marked_map, 0, MP_CACHE_LINE_SIZE);
-	mask_count = capacity >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_count = capacity & MP_BLOCK_MASK_MOD_MASK;
-	(void)memset(allocator->free_map, 0xff, mask_count * MP_PTR_SIZE);
-	mask = ((size_t)1 << bit_count) - (size_t)1;
-	allocator->free_map[mask_count] = mask;
-	mask_count = reserved_count >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_count = reserved_count & MP_BLOCK_MASK_MOD_MASK;
-	(void)memset(allocator->free_map, 0, mask_count * MP_PTR_SIZE);
-	allocator->free_map[0] &= ~mask;
+	mask_count = reserved_count >> MP_PTR_SIZE_LOG2;
+	bit_count = reserved_count & MP_PTR_SIZE_MASK;
+	(void)memset(allocator->free_map, 0, mask_count);
+	allocator->free_map[mask_count] &= ~(((size_t)1 << bit_count) - (size_t)1);
 }
 
-MP_INLINE_NEVER static uint_fast32_t mp_block_allocator_reclaim(size_t* free_map, mp_atomic_size_t* marked_map, size_t bitmask_count)
+MP_INLINE_NEVER static uint_fast32_t mp_block_allocator_reclaim(size_t* free_map, mp_atomic_size_t* marked_map, uint_fast32_t bitmask_count)
 {
 	size_t mask;
 	uint_fast32_t i, freed_count;
@@ -1154,7 +1230,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allo
 			continue;
 		bit_index = MP_CTZ(allocator->free_map[mask_index]);
 		MP_BR(allocator->free_map[mask_index], bit_index);
-		offset = (mask_index << MP_BLOCK_MASK_BIT_SIZE_LOG2) | bit_index;
+		offset = (mask_index << MP_PTR_SIZE_LOG2) | bit_index;
 		offset <<= allocator->block_size_log2;
 		--allocator->free_count;
 		MP_UNLIKELY_IF(allocator->free_count == 0)
@@ -1175,7 +1251,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_alloc
 			continue;
 		bit_index = MP_CTZ(allocator->free_map[mask_index]);
 		MP_BR(allocator->free_map[mask_index], bit_index);
-		offset = (mask_index << MP_BLOCK_MASK_BIT_SIZE_LOG2) | bit_index;
+		offset = (mask_index << MP_PTR_SIZE_LOG2) | bit_index;
 		offset *= allocator->block_size;
 		--allocator->free_count;
 		MP_UNLIKELY_IF(allocator->free_count == 0)
@@ -1205,8 +1281,8 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_free(mp_block_allocato
 	MP_INVARIANT(mp_block_allocator_intrusive_owns(allocator, ptr));
 	++allocator->free_count;
 	index = mp_block_allocator_intrusive_index_of(allocator, ptr);
-	mask_index = index >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_index = index & MP_BLOCK_MASK_MOD_MASK;
+	mask_index = index >> MP_PTR_SIZE_LOG2;
+	bit_index = index & MP_PTR_SIZE_MASK;
 	MP_BS(allocator->free_map[mask_index], bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked))
 		mp_block_allocator_recover(&allocator->linked, allocator->owner->recovered + allocator->size_class, allocator);
@@ -1217,8 +1293,8 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_free_shared(mp_block_a
 	uint_fast32_t index, mask_index, bit_index;
 	MP_INVARIANT(mp_block_allocator_intrusive_owns(allocator, ptr));
 	index = mp_block_allocator_intrusive_index_of(allocator, ptr);
-	mask_index = index >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_index = index & MP_BLOCK_MASK_MOD_MASK;
+	mask_index = index >> MP_PTR_SIZE_LOG2;
+	bit_index = index & MP_PTR_SIZE_MASK;
 	MP_ATOMIC_BIT_SET_REL(allocator->marked_map + mask_index, bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked))
 		mp_block_allocator_recover(&allocator->linked, allocator->owner->recovered + allocator->size_class, allocator);
@@ -1230,8 +1306,8 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free(mp_block_allocator* allocat
 	MP_INVARIANT(mp_block_allocator_owns(allocator, ptr));
 	++allocator->free_count;
 	index = mp_block_allocator_index_of(allocator, ptr);
-	mask_index = index >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_index = index & MP_BLOCK_MASK_MOD_MASK;
+	mask_index = index >> MP_PTR_SIZE_LOG2;
+	bit_index = index & MP_PTR_SIZE_MASK;
 	MP_BS(allocator->free_map[mask_index], bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked))
 		mp_block_allocator_recover(&allocator->linked, allocator->owner->recovered_large + allocator->size_class, allocator);
@@ -1242,8 +1318,8 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free_shared(mp_block_allocator* 
 	uint_fast32_t index, mask_index, bit_index;
 	MP_INVARIANT(mp_block_allocator_owns(allocator, ptr));
 	index = mp_block_allocator_index_of(allocator, ptr);
-	mask_index = index >> MP_BLOCK_MASK_BIT_SIZE_LOG2;
-	bit_index = index & MP_BLOCK_MASK_MOD_MASK;
+	mask_index = index >> MP_PTR_SIZE_LOG2;
+	bit_index = index & MP_PTR_SIZE_MASK;
 	MP_ATOMIC_BIT_SET_REL(allocator->marked_map + mask_index, bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked))
 		mp_block_allocator_recover(&allocator->linked, allocator->owner->recovered_large + allocator->size_class, allocator);
@@ -1463,13 +1539,11 @@ MP_INLINE_ALWAYS static mp_block_allocator* mp_tcache_block_allocator_of(const v
 MP_PURE MP_INLINE_ALWAYS static uint_fast8_t mp_tcache_size_class_small(size_t size)
 {
 	uint_fast8_t log2, i;
-	log2 = MP_CEIL_LOG2(size);
-	if (log2 >= MP_SIZE_MAP_MAX_LOG2)
-		return log2 - MP_SIZE_MAP_MAX_LOG2;
+	log2 = MP_FLOOR_LOG2(size);
 	for (i = 0; i != MP_SIZE_MAP_SIZES[log2]; ++i)
 		MP_LIKELY_IF(MP_SIZE_MAP[log2][i] >= size)
 			return MP_SIZE_MAP_OFFSETS[log2] + i;
-	MP_UNREACHABLE;
+	return MP_CEIL_LOG2(size) - MP_SIZE_MAP_MAX_LOG2;
 }
 
 MP_PURE MP_INLINE_ALWAYS static uint_fast32_t mp_tcache_size_class_large(size_t size)
@@ -1477,7 +1551,7 @@ MP_PURE MP_INLINE_ALWAYS static uint_fast32_t mp_tcache_size_class_large(size_t 
 	return MP_CEIL_LOG2(size) - page_size_log2;
 }
 
-MP_INLINE_ALWAYS static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size_t size, uint_fast8_t sc)
+MP_INLINE_NEVER static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size_t size, uint_fast8_t sc)
 {
 	void* r;
 	size_t k;
@@ -1496,7 +1570,7 @@ MP_INLINE_ALWAYS static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, siz
 	return r;
 }
 
-MP_INLINE_ALWAYS static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size_t size, uint_fast8_t sc)
+MP_INLINE_NEVER static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size_t size, uint_fast8_t sc)
 {
 	void* r;
 	void* buffer;
@@ -1519,7 +1593,7 @@ MP_INLINE_ALWAYS static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, siz
 	return r;
 }
 
-MP_INLINE_ALWAYS static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
+static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
 {
 	void* r;
 	mp_block_allocator_intrusive** bin;
@@ -1542,12 +1616,11 @@ MP_INLINE_ALWAYS static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, siz
 	{
 		MP_ATOMIC_CLEAR_REL(&allocator->linked);
 		*bin = (*bin)->next;
-		allocator->next = NULL;
 	}
 	return r;
 }
 
-MP_INLINE_ALWAYS static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
+static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
 {
 	void* r;
 	mp_block_allocator** bin;
@@ -1555,7 +1628,7 @@ MP_INLINE_ALWAYS static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, siz
 	mp_block_allocator* allocator;
 	uint_fast8_t sc;
 	sc = mp_tcache_size_class_large(size);
-	MP_INVARIANT(sc < chunk_size_log2);
+	MP_INVARIANT(sc < chunk_size_log2 - page_size_log2);
 	MP_INVARIANT(size == ((size_t)1 << (sc + page_size_log2)));
 	bin = tcache->bins_large + sc;
 	recover_list = tcache->recovered_large + sc;
@@ -1571,7 +1644,6 @@ MP_INLINE_ALWAYS static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, siz
 	{
 		MP_ATOMIC_CLEAR_REL(&allocator->linked);
 		*bin = (*bin)->next;
-		allocator->next = NULL;
 	}
 	return r;
 }
@@ -1589,55 +1661,6 @@ MP_INLINE_ALWAYS static void mp_tcache_check_integrity(mp_tcache* tcache)
 		for (allocator = tcache->bins_large[i]; allocator != NULL; allocator = allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator(allocator));
 #endif
-}
-
-// ================================================================
-//	DEBUG FUNCTIONS
-// ================================================================
-
-#ifdef MP_DEBUG
-#include <stdio.h>
-static void mp_default_debugger_message_callback(void* context, const char* message, size_t size)
-{
-	MP_INVARIANT(message != NULL);
-	(void)fwrite(message, 1, size, stdout);
-}
-
-static void mp_default_debugger_warning_callback(void* context, const char* message, size_t size)
-{
-	MP_INVARIANT(message != NULL);
-	(void)fwrite(message, 1, size, stdout);
-}
-
-static void mp_default_debugger_error_callback(void* context, const char* message, size_t size)
-{
-	MP_INVARIANT(message != NULL);
-	(void)fwrite(message, 1, size, stderr);
-}
-#endif
-
-MP_INLINE_ALWAYS static void mp_init_redzone(void* buffer, size_t size)
-{
-#ifdef MP_CHECK_OVERFLOW
-	buffer = (uint8_t*)buffer + size;
-	(void)memset(buffer, MP_REDZONE_VALUE, MP_REDZONE_SIZE);
-#endif
-}
-
-MP_INLINE_ALWAYS static mp_bool mp_check_redzone(const void* buffer, size_t size)
-{
-#ifdef MP_CHECK_OVERFLOW
-	const size_t* ptr;
-	size_t expected, i;
-	const size_t count = MP_REDZONE_SIZE >> MP_PTR_SIZE_LOG2;
-	buffer = (const uint8_t*)buffer + size;
-	ptr = (const size_t*)buffer;
-	(void)memset(&expected, MP_REDZONE_VALUE, MP_PTR_SIZE);
-	for (i = 0; i != count; ++i)
-		MP_UNLIKELY_IF(ptr[i] != expected)
-			return MP_FALSE;
-#endif
-	return MP_TRUE;
 }
 
 // ================================================================
@@ -1710,7 +1733,7 @@ MP_ATTR void MP_CALL mp_cleanup()
 {
 	mp_persistent_cleanup_impl(&public_persistent_allocator);
 #ifdef MP_DEBUG
-	mp_debug_enabled_flag = MP_FALSE;
+	mp_debugger_enabled_flag = MP_FALSE;
 #endif
 #ifdef MP_64BIT
 	mp_init_flag = MP_FALSE;
@@ -1786,7 +1809,7 @@ MP_ATTR void MP_CALL mp_free(void* ptr, size_t size)
 	MP_INVARIANT(ptr != NULL);
 	k = mp_round_size(MP_SIZE_WITH_REDZONE(size));
 	MP_INVARIANT(mp_check_redzone(ptr, size));
-	MP_LIKELY_IF(k < mp_tcache_max_size())
+	MP_LIKELY_IF(k <= mp_tcache_max_size())
 		mp_tcache_free(ptr, k);
 	else
 		mp_lcache_free(ptr, k);
@@ -1794,7 +1817,7 @@ MP_ATTR void MP_CALL mp_free(void* ptr, size_t size)
 
 MP_ATTR size_t MP_CALL mp_round_size(size_t size)
 {
-	MP_LIKELY_IF(size < mp_tcache_max_size())
+	MP_LIKELY_IF(size <= mp_tcache_max_size())
 		return mp_tcache_round_size(size);
 	else
 		return mp_lcache_round_size(size);
@@ -1816,13 +1839,12 @@ MP_ATTR void* MP_CALL mp_tcache_malloc(size_t size, mp_flags flags)
 	size_t k;
 	MP_INVARIANT(this_thread_tcache != NULL);
 	mp_tcache_check_integrity(this_thread_tcache);
-	k = mp_round_size(MP_SIZE_WITH_REDZONE(size));
+	k = mp_round_size(size);
 	if (size <= page_size)
 		r = mp_tcache_malloc_small_fast(this_thread_tcache, k, flags);
 	else
 		r = mp_tcache_malloc_large_fast(this_thread_tcache, k, flags);
 	mp_tcache_check_integrity(this_thread_tcache);
-	mp_init_redzone(r, size);
 	MP_DEBUG_JUNK_FILL(r, size);
 	return r;
 }
@@ -1833,7 +1855,6 @@ MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
 	mp_block_allocator* allocator;
 	size_t k;
 	mp_tcache_check_integrity(this_thread_tcache);
-	mp_check_redzone(ptr, size);
 	size = mp_round_size(size);
 	MP_LIKELY_IF(size <= page_size)
 	{
@@ -1861,13 +1882,11 @@ MP_ATTR size_t MP_CALL mp_tcache_round_size(size_t size)
 {
 	uint_fast8_t log2, i;
 	MP_INVARIANT(size <= chunk_size / 2);
-	log2 = MP_CEIL_LOG2(size);
-	MP_LIKELY_IF(log2 >= MP_SIZE_MAP_MAX_LOG2)
-		return MP_CEIL_POW2(size);
-	for (i = 0; i != MP_SIZE_MAP_SIZES[log2]; ++i)
+	log2 = MP_FLOOR_LOG2(size);
+	for (i = 0; i < MP_SIZE_MAP_SIZES[log2]; ++i)
 		MP_LIKELY_IF(MP_SIZE_MAP[log2][i] >= size)
 			return MP_SIZE_MAP[log2][i];
-	MP_UNREACHABLE;
+	return MP_CEIL_POW2(size);
 }
 
 MP_ATTR size_t MP_CALL mp_tcache_flush(mp_flags flags, void* param)
@@ -1887,7 +1906,7 @@ MP_ATTR void* MP_CALL mp_lcache_malloc(size_t size, mp_flags flags)
 	MP_LIKELY_IF(bin != NULL)
 		r = mp_chunk_list_pop(bin);
 	MP_UNLIKELY_IF(r == NULL && (flags & MP_ENABLE_FALLBACK))
-		r = backend_malloc(size);
+		r = mp_backend_malloc(size);
 	MP_DEBUG_JUNK_FILL(r, size);
 	return r;
 }
@@ -1928,14 +1947,27 @@ MP_ATTR void MP_CALL mp_persistent_cleanup()
 
 MP_ATTR void* MP_CALL mp_backend_malloc(size_t size)
 {
+	void* r;
+	size_t k;
 	MP_INVARIANT(backend_malloc != NULL);
-	return backend_malloc(size);
+	k = mp_round_size(MP_SIZE_WITH_REDZONE(size));
+	r = backend_malloc(k);
+	MP_DEBUG_JUNK_FILL(r, size);
+	mp_init_redzone(r, size);
+	return r;
 }
 
 MP_ATTR mp_bool MP_CALL mp_backend_resize(void* ptr, size_t old_size, size_t new_size)
 {
+	size_t k;
 	MP_INVARIANT(backend_resize != NULL);
-	return backend_resize(ptr, old_size, new_size);
+	mp_check_redzone(ptr, old_size);
+	k = mp_round_size(MP_SIZE_WITH_REDZONE(new_size));
+	MP_UNLIKELY_IF(backend_resize(ptr, old_size, k))
+		return MP_FALSE;
+	mp_init_redzone(ptr, new_size);
+	MP_DEBUG_JUNK_FILL((uint8_t*)ptr + old_size, new_size - old_size);
+	return MP_TRUE;
 }
 
 MP_ATTR void MP_CALL mp_backend_free(void* ptr, size_t size)
@@ -1954,14 +1986,14 @@ MP_ATTR void MP_CALL mp_debug_init(const mp_debugger_options* options)
 {
 #ifdef MP_DEBUG
 	(void)memcpy(&debugger, options, sizeof(mp_debugger_options));
-	mp_debug_enabled_flag = MP_TRUE;
+	mp_debugger_enabled_flag = MP_TRUE;
 #endif
 }
 
 MP_ATTR mp_bool MP_CALL mp_debug_enabled()
 {
 #ifdef MP_DEBUG
-	return mp_debug_enabled_flag;
+	return mp_debugger_enabled_flag;
 #else
 	return MP_FALSE;
 #endif
