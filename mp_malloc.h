@@ -149,6 +149,7 @@ MP_ATTR void				MP_CALL mp_free(void* ptr, size_t size);
 MP_ATTR size_t				MP_CALL mp_round_size(size_t size);
 
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_tcache_malloc(size_t size, mp_flags flags);
+MP_ATTR mp_bool				MP_CALL mp_tcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
 MP_ATTR void				MP_CALL mp_tcache_free(void* ptr, size_t size);
 MP_ATTR size_t				MP_CALL mp_tcache_round_size(size_t size);
 MP_ATTR size_t				MP_CALL mp_tcache_flush(mp_flags flags, void* param);
@@ -156,6 +157,7 @@ MP_ATTR size_t				MP_CALL mp_tcache_min_size();
 MP_ATTR size_t				MP_CALL mp_tcache_max_size();
 
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_lcache_malloc(size_t size, mp_flags flags);
+MP_ATTR mp_bool				MP_CALL mp_lcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
 MP_ATTR void				MP_CALL mp_lcache_free(void* ptr, size_t size);
 MP_ATTR size_t				MP_CALL mp_lcache_round_size(size_t size);
 MP_ATTR size_t				MP_CALL mp_lcache_flush(mp_flags flags, void* param);
@@ -1775,7 +1777,10 @@ MP_ATTR void* MP_CALL mp_malloc(size_t size)
 MP_ATTR mp_bool MP_CALL mp_resize(void* ptr, size_t old_size, size_t new_size)
 {
 	MP_INVARIANT(ptr != NULL);
-	return mp_round_size(MP_SIZE_WITH_REDZONE(old_size)) == mp_round_size(MP_SIZE_WITH_REDZONE(new_size));
+	MP_LIKELY_IF(MP_ALIGN_CEIL(old_size, chunk_size / 2) < old_size)
+		return mp_tcache_resize(ptr, old_size, new_size, MP_ENABLE_FALLBACK);
+	else
+		return mp_lcache_resize(ptr, old_size, new_size, MP_ENABLE_FALLBACK);
 }
 
 MP_ATTR void* MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size)
@@ -1831,6 +1836,11 @@ MP_ATTR void* MP_CALL mp_tcache_malloc(size_t size, mp_flags flags)
 	mp_this_tcache_check_integrity();
 	MP_DEBUG_JUNK_FILL(r, size);
 	return r;
+}
+
+MP_ATTR mp_bool MP_CALL mp_tcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags)
+{
+	return mp_tcache_round_size(MP_SIZE_WITH_REDZONE(old_size)) == mp_tcache_round_size(MP_SIZE_WITH_REDZONE(new_size));
 }
 
 MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
@@ -1896,6 +1906,13 @@ MP_ATTR void* MP_CALL mp_lcache_malloc(size_t size, mp_flags flags)
 		r = mp_backend_malloc(size);
 	MP_DEBUG_JUNK_FILL(r, size);
 	return r;
+}
+
+MP_ATTR mp_bool MP_CALL mp_lcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags)
+{
+	MP_LIKELY_IF(mp_lcache_round_size(MP_SIZE_WITH_REDZONE(old_size)) == mp_lcache_round_size(MP_SIZE_WITH_REDZONE(new_size)))
+		return MP_TRUE;
+	return mp_backend_resize(ptr, old_size, new_size);
 }
 
 MP_ATTR void MP_CALL mp_lcache_free(void* ptr, size_t size)
