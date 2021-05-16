@@ -185,30 +185,14 @@ MP_EXTERN_C_END
 #if defined(__cplusplus) && defined(MP_CXX_API)
 namespace mp
 {
-	struct init_options : mp_init_options
-	{
-		inline MP_ATTR MP_CALL init_options() noexcept { mp_init_info_default((mp_init_options*)this); }
-		~init_options() = default;
-	};
-
+	using init_options = mp_init_options;
 	using memory_stats = mp_mem_stats;
-
-	struct trim_options : mp_trim_options
-	{
-		inline MP_ATTR MP_CALL trim_options() noexcept { mp_trim_options_default((mp_trim_options*)this); }
-		~trim_options() = default;
-	};
-
-	struct debugger_options : mp_debugger_options
-	{
-		inline MP_ATTR MP_CALL debugger_options() noexcept { mp_debugger_options_default((mp_debugger_options*)this); }
-		~debugger_options() = default;
-	};
+	using trim_options = mp_trim_options;
+	using debugger_options = mp_debugger_options;
 
 	MP_ATTR void			MP_CALL init(const mp_init_options* options) noexcept { return mp_init(options); }
 	MP_ATTR void			MP_CALL init() noexcept { return mp_init_default(); }
 	MP_ATTR void			MP_CALL cleanup() noexcept { mp_cleanup(); }
-	MP_ATTR memory_stats	MP_CALL stats() noexcept { mp_mem_stats r; mp_stats(&r); return r; }
 	MP_ATTR void*			MP_CALL malloc(size_t size) noexcept { return mp_malloc(size); }
 	MP_ATTR bool			MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_resize(ptr, old_size, new_size); }
 	MP_ATTR void*			MP_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_realloc(ptr, old_size, new_size); }
@@ -218,9 +202,9 @@ namespace mp
 	namespace thread_cache
 	{
 		MP_ATTR void*		MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_tcache_malloc(size, flags); }
+		MP_ATTR bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags) noexcept { return mp_tcache_resize(ptr, old_size, new_size, flags); }
 		MP_ATTR void		MP_CALL free(void* ptr, size_t size) noexcept { mp_tcache_free(ptr, size); }
 		MP_ATTR size_t		MP_CALL round_size(size_t size) noexcept { return mp_tcache_round_size(size); }
-		MP_ATTR size_t		MP_CALL flush(mp_flags flags, void* param) noexcept { return mp_tcache_flush(flags, param); }
 		MP_ATTR size_t		MP_CALL min_size() noexcept { return mp_tcache_min_size(); }
 		MP_ATTR size_t		MP_CALL max_size() noexcept { return mp_tcache_max_size(); }
 	}
@@ -228,9 +212,9 @@ namespace mp
 	namespace large_cache
 	{
 		MP_ATTR void*		MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_lcache_malloc(size, flags); }
+		MP_ATTR bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags) noexcept { return mp_lcache_resize(ptr, old_size, new_size, flags); }
 		MP_ATTR void		MP_CALL free(void* ptr, size_t size) noexcept { mp_lcache_free(ptr, size); }
 		MP_ATTR size_t		MP_CALL round_size(size_t size) noexcept { return mp_lcache_round_size(size); }
-		MP_ATTR size_t		MP_CALL flush(mp_flags flags, void* param) noexcept { return mp_lcache_flush(flags, param); }
 		MP_ATTR size_t		MP_CALL min_size() noexcept { return mp_lcache_min_size(); }
 		MP_ATTR size_t		MP_CALL max_size() noexcept { return mp_lcache_max_size(); }
 	}
@@ -247,7 +231,7 @@ namespace mp
 		MP_ATTR void*		MP_CALL malloc(size_t size) noexcept { return mp_backend_malloc(size); }
 		MP_ATTR bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_backend_resize(ptr, old_size, new_size); }
 		MP_ATTR void		MP_CALL free(void* ptr, size_t size) noexcept { return mp_backend_free(ptr, size); }
-		MP_ATTR void		MP_CALL purge(void* ptr, size_t size) noexcept { return mp_backend_free(ptr, size); }
+		MP_ATTR void		MP_CALL purge(void* ptr, size_t size) noexcept { return mp_backend_purge(ptr, size); }
 	}
 
 	namespace debugger
