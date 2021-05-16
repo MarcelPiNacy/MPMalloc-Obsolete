@@ -1522,7 +1522,7 @@ MP_INLINE_ALWAYS static void mp_tcache_lookup_init()
 }
 #endif
 
-MP_TLS static mp_tcache* this_thread_tcache;
+MP_TLS static mp_tcache* this_tcache;
 
 MP_INLINE_ALWAYS static mp_block_allocator* mp_tcache_find_allocator(void* buffer)
 {
@@ -1564,12 +1564,12 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size
 	mp_block_allocator_intrusive* allocator;
 	mp_block_allocator_intrusive** bin;
 	bin = tcache->bins + sc;
-	MP_INVARIANT(this_thread_tcache != NULL);
+	MP_INVARIANT(this_tcache != NULL);
 	k = mp_chunk_size_of_small(size);
 	allocator = (mp_block_allocator_intrusive*)mp_malloc(k);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mp_block_allocator_intrusive_init(allocator, (uint_fast32_t)size, sc, k, this_thread_tcache);
+	mp_block_allocator_intrusive_init(allocator, (uint_fast32_t)size, sc, k, this_tcache);
 	r = mp_block_allocator_intrusive_malloc(allocator);
 	allocator->next = *bin;
 	*bin = allocator;
@@ -1583,7 +1583,7 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size
 	size_t k;
 	mp_block_allocator* allocator;
 	mp_block_allocator** bin;
-	MP_INVARIANT(this_thread_tcache != NULL);
+	MP_INVARIANT(this_tcache != NULL);
 	k = mp_chunk_size_of_large(size);
 	buffer = mp_lcache_malloc(chunk_size, MP_ENABLE_FALLBACK);
 	MP_UNLIKELY_IF(buffer == NULL)
@@ -1591,7 +1591,7 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size
 	allocator = mp_tcache_insert_allocator(buffer);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mp_block_allocator_init(allocator, MP_FLOOR_LOG2(size), sc, k, this_thread_tcache, buffer);
+	mp_block_allocator_init(allocator, MP_FLOOR_LOG2(size), sc, k, this_tcache, buffer);
 	r = mp_block_allocator_malloc(allocator);
 	bin = tcache->bins_large + sc;
 	allocator->next = *bin;
@@ -1654,17 +1654,17 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 	return r;
 }
 
-MP_INLINE_ALWAYS static void mp_tcache_check_integrity(mp_tcache* tcache)
+MP_INLINE_ALWAYS static void mp_this_tcache_check_integrity()
 {
 #ifdef MP_DEBUG
 	mp_block_allocator_intrusive* intrusive_allocator;
 	mp_block_allocator* allocator;
 	size_t i;
 	for (i = 0; i != MP_SIZE_CLASS_COUNT; ++i)
-		for (intrusive_allocator = tcache->bins[i]; intrusive_allocator != NULL; intrusive_allocator = intrusive_allocator->next)
+		for (intrusive_allocator = this_tcache->bins[i]; intrusive_allocator != NULL; intrusive_allocator = intrusive_allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator_intrusive(intrusive_allocator));
 	for (i = 0; i != (size_t)chunk_size_log2 - page_size_log2; ++i)
-		for (allocator = tcache->bins_large[i]; allocator != NULL; allocator = allocator->next)
+		for (allocator = this_tcache->bins_large[i]; allocator != NULL; allocator = allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator(allocator));
 #endif
 }
@@ -1747,15 +1747,15 @@ MP_ATTR void MP_CALL mp_cleanup()
 
 MP_ATTR void MP_CALL mp_thread_init()
 {
-	MP_INVARIANT(this_thread_tcache == NULL);
-	this_thread_tcache = mp_tcache_acquire();
+	MP_INVARIANT(this_tcache == NULL);
+	this_tcache = mp_tcache_acquire();
 }
 
 MP_ATTR void MP_CALL mp_thread_cleanup()
 {
-	MP_INVARIANT(this_thread_tcache != NULL);
-	mp_tcache_release(this_thread_tcache);
-	this_thread_tcache = NULL;
+	MP_INVARIANT(this_tcache != NULL);
+	mp_tcache_release(this_tcache);
+	this_tcache = NULL;
 }
 
 MP_ATTR void* MP_CALL mp_malloc(size_t size)
@@ -1821,14 +1821,14 @@ MP_ATTR void* MP_CALL mp_tcache_malloc(size_t size, mp_flags flags)
 {
 	void* r;
 	size_t k;
-	MP_INVARIANT(this_thread_tcache != NULL);
-	mp_tcache_check_integrity(this_thread_tcache);
+	MP_INVARIANT(this_tcache != NULL);
+	mp_this_tcache_check_integrity();
 	k = mp_round_size(size);
 	if (size <= page_size)
-		r = mp_tcache_malloc_small_fast(this_thread_tcache, k, flags);
+		r = mp_tcache_malloc_small_fast(this_tcache, k, flags);
 	else
-		r = mp_tcache_malloc_large_fast(this_thread_tcache, k, flags);
-	mp_tcache_check_integrity(this_thread_tcache);
+		r = mp_tcache_malloc_large_fast(this_tcache, k, flags);
+	mp_this_tcache_check_integrity();
 	MP_DEBUG_JUNK_FILL(r, size);
 	return r;
 }
@@ -1838,14 +1838,14 @@ MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
 	mp_block_allocator_intrusive* intrusive_allocator;
 	mp_block_allocator* allocator;
 	size_t k;
-	mp_tcache_check_integrity(this_thread_tcache);
+	mp_this_tcache_check_integrity();
 	size = mp_round_size(size);
 	MP_LIKELY_IF(size <= page_size)
 	{
 		k = mp_chunk_size_of_small(size);
 		intrusive_allocator = mp_tcache_block_allocator_intrusive_allocator_of(ptr, k);
 		MP_INVARIANT(intrusive_allocator != NULL);
-		MP_LIKELY_IF(intrusive_allocator->owner == this_thread_tcache)
+		MP_LIKELY_IF(intrusive_allocator->owner == this_tcache)
 			mp_block_allocator_intrusive_free(intrusive_allocator, ptr);
 		else
 			mp_block_allocator_intrusive_free_shared(intrusive_allocator, ptr);
@@ -1854,12 +1854,12 @@ MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
 	{
 		allocator = mp_tcache_block_allocator_of(ptr);
 		MP_INVARIANT(allocator != NULL);
-		MP_LIKELY_IF(allocator->owner == this_thread_tcache)
+		MP_LIKELY_IF(allocator->owner == this_tcache)
 			mp_block_allocator_free(allocator, ptr);
 		else
 			mp_block_allocator_free_shared(allocator, ptr);
 	}
-	mp_tcache_check_integrity(this_thread_tcache);
+	mp_this_tcache_check_integrity();
 }
 
 MP_ATTR size_t MP_CALL mp_tcache_round_size(size_t size)
