@@ -1566,8 +1566,8 @@ MP_INLINE_ALWAYS static void mp_lcache_init()
 	lcache_bin_count = 1 << (32 - chunk_size_log2);
 	k = lcache_bin_count * sizeof(mp_chunk_list);
 	lcache_bins = (mp_chunk_list*)mp_persistent_malloc_impl(&internal_persistent_allocator, k);
-	(void)memset((size_t*)lcache_bins, 0, k);
 	MP_INVARIANT(lcache_bins != NULL);
+	(void)memset((size_t*)lcache_bins, 0, k);
 #else
 	uint_fast8_t n;
 	n = 64 - chunk_size_log2;
@@ -1787,7 +1787,7 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	page_size = info.dwPageSize;
 	chunk_size = page_size * MP_CACHE_LINE_SIZE * 8;
 	max_address = info.lpMaximumApplicationAddress;
-	min_chunk = (void*)MP_ALIGN_CEIL_BASE((size_t)info.lpMinimumApplicationAddress, chunk_size_mask);
+	min_chunk = (void*)MP_ALIGN_CEIL_BASE((size_t)info.lpMinimumApplicationAddress, chunk_size - 1);
 #else
 	page_size = (size_t)getpagesize();
 	chunk_size = page_size * MP_CACHE_LINE_SIZE * 8;
@@ -1818,7 +1818,6 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	MP_INVARIANT(options->backend == NULL);
 	mp_os_init();
 #endif
-
 	mp_lcache_init();
 #ifdef MP_32BIT
 	mp_tcache_lookup_init();
