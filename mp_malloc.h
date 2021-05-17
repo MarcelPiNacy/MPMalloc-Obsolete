@@ -100,9 +100,9 @@ typedef mp_bool(MP_PTR* mp_fn_resize)(void* ptr, size_t old_size, size_t new_siz
 typedef void*(MP_PTR* mp_fn_realloc)(void* ptr, size_t old_size, size_t new_size);
 typedef void(MP_PTR* mp_fn_free)(void* ptr, size_t size);
 typedef void(MP_PTR* mp_fn_purge)(void* ptr, size_t size);
-typedef void(MP_PTR *mp_fn_debugger_message)(void* context, const char* message, size_t size);
-typedef void(MP_PTR *mp_fn_debugger_warning)(void* context, const char* message, size_t size);
-typedef void(MP_PTR *mp_fn_debugger_error)(void* context, const char* message, size_t size);
+typedef void(MP_PTR *mp_fn_debug_message)(void* context, const char* message, size_t size);
+typedef void(MP_PTR *mp_fn_debug_warning)(void* context, const char* message, size_t size);
+typedef void(MP_PTR *mp_fn_debug_error)(void* context, const char* message, size_t size);
 
 typedef struct mp_backend_options
 {
@@ -128,19 +128,20 @@ typedef struct mp_heap_stats
 	size_t peak_memory;
 } mp_heap_stats;
 
-typedef struct mp_debugger_options
+typedef struct mp_debug_options
 {
 	void* context;
-	mp_fn_debugger_message message;
-	mp_fn_debugger_warning warning;
-	mp_fn_debugger_error error;
-} mp_debugger_options;
+	mp_fn_debug_message message;
+	mp_fn_debug_warning warning;
+	mp_fn_debug_error error;
+} mp_debug_options;
 
 MP_ATTR void				MP_CALL mp_init(const mp_init_options* options);
 MP_ATTR void				MP_CALL mp_init_default();
-MP_ATTR mp_bool				MP_CALL mp_is_initialized();
+MP_ATTR mp_bool				MP_CALL mp_enabled();
 MP_ATTR void				MP_CALL mp_cleanup();
 MP_ATTR void				MP_CALL mp_thread_init();
+MP_ATTR mp_bool				MP_CALL mp_thread_enabled();
 MP_ATTR void				MP_CALL mp_thread_cleanup();
 
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_malloc(size_t size);
@@ -172,7 +173,7 @@ MP_ATTR void				MP_CALL mp_backend_free(void* ptr, size_t size);
 MP_ATTR void				MP_CALL mp_backend_purge(void* ptr, size_t size);
 MP_ATTR size_t				MP_CALL mp_backend_required_alignment();
 
-MP_ATTR void				MP_CALL mp_debug_init(const mp_debugger_options* options);
+MP_ATTR void				MP_CALL mp_debug_init(const mp_debug_options* options);
 MP_ATTR void				MP_CALL mp_debug_init_default();
 MP_ATTR mp_bool				MP_CALL mp_debug_enabled();
 MP_ATTR void				MP_CALL mp_debug_message(const char* message, size_t size);
@@ -188,7 +189,7 @@ namespace mp
 	using init_options = mp_init_options;
 	using memory_stats = mp_heap_stats;
 	using trim_options = mp_trim_options;
-	using debugger_options = mp_debugger_options;
+	using debug_options = mp_debug_options;
 
 	MP_ATTR void			MP_CALL init(const mp_init_options* options) noexcept { return mp_init(options); }
 	MP_ATTR void			MP_CALL init() noexcept { return mp_init_default(); }
@@ -235,7 +236,7 @@ namespace mp
 
 	namespace debugger
 	{
-		MP_ATTR void		MP_CALL init(const debugger_options* options) noexcept { return mp_debug_init((const mp_debugger_options*)options); }
+		MP_ATTR void		MP_CALL init(const debug_options* options) noexcept { return mp_debug_init((const mp_debug_options*)options); }
 		MP_ATTR bool		MP_CALL enabled() noexcept { return mp_debug_enabled(); }
 		MP_ATTR void		MP_CALL message(const char* message, size_t size) noexcept { return mp_debug_message(message, size); }
 		MP_ATTR void		MP_CALL warning(const char* message, size_t size) noexcept { return mp_debug_warning(message, size); }
@@ -313,6 +314,10 @@ namespace mp
 #define MP_SPIN_WAIT __builtin_ia32_pause()
 #elif defined(__arm__)
 #define MP_SPIN_WAIT __yield()
+#elif defined(__POWERPC__)
+#define MP_SPIN_WAIT asm volatile("or 31,31,31")
+#else
+#define MP_SPIN_WAIT
 #endif
 #ifndef __cplusplus
 #define MP_ALIGNAS(SIZE) __attribute__((aligned((SIZE))))
@@ -348,6 +353,12 @@ namespace mp
 #elif defined(_M_ARM)
 #define MP_SPIN_WAIT __yield()
 #define MP_PREFETCH(PTR) __prefetch((const CHAR*)(PTR))
+#elif defined(_M_PPC)
+#define MP_SPIN_WAIT
+#define MP_PREFETCH(PTR)
+#else
+#define MP_SPIN_WAIT
+#define MP_PREFETCH(PTR)
 #endif
 #ifndef __cplusplus
 #define MP_ALIGNAS(SIZE) __declspec(align(SIZE))
@@ -685,8 +696,8 @@ static uint8_t chunk_size_log2;
 static bool mp_init_flag;
 #endif
 #ifdef MP_DEBUG
-static mp_debugger_options debugger;
-static bool mp_debugger_enabled_flag;
+static mp_debug_options debugger;
+static bool mp_debug_enabled_flag;
 #endif
 
 // ================================================================
@@ -795,17 +806,17 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast32_t mp_get_large_sc(size_t size)
 
 #ifdef MP_DEBUG
 #include <stdio.h>
-static void mp_default_debugger_message_callback(void* context, const char* message, size_t size)
+static void mp_default_debug_message_callback(void* context, const char* message, size_t size)
 {
 	(void)fwrite(message, 1, size, stdout);
 }
 
-static void mp_default_debugger_warning_callback(void* context, const char* message, size_t size)
+static void mp_default_debug_warning_callback(void* context, const char* message, size_t size)
 {
 	(void)fwrite(message, 1, size, stdout);
 }
 
-static void mp_default_debugger_error_callback(void* context, const char* message, size_t size)
+static void mp_default_debug_error_callback(void* context, const char* message, size_t size)
 {
 	(void)fwrite(message, 1, size, stderr);
 }
@@ -1755,7 +1766,7 @@ MP_ATTR void MP_CALL mp_init_default()
 	mp_init(&opt);
 }
 
-MP_ATTR mp_bool MP_CALL mp_is_initialized()
+MP_ATTR mp_bool MP_CALL mp_enabled()
 {
 #ifdef MP_32BIT
 	return lcache_bins != NULL;
@@ -1768,7 +1779,7 @@ MP_ATTR void MP_CALL mp_cleanup()
 {
 	mp_persistent_cleanup_impl(&public_persistent_allocator);
 #ifdef MP_DEBUG
-	mp_debugger_enabled_flag = MP_FALSE;
+	mp_debug_enabled_flag = MP_FALSE;
 #endif
 #ifdef MP_64BIT
 	mp_init_flag = MP_FALSE;
@@ -1779,6 +1790,11 @@ MP_ATTR void MP_CALL mp_thread_init()
 {
 	MP_INVARIANT(this_tcache == NULL);
 	this_tcache = mp_tcache_acquire();
+}
+
+MP_ATTR mp_bool MP_CALL mp_thread_enabled()
+{
+	return this_tcache != NULL;
 }
 
 MP_ATTR void MP_CALL mp_thread_cleanup()
@@ -2009,11 +2025,11 @@ MP_ATTR size_t MP_CALL mp_backend_required_alignment()
 	return chunk_size;
 }
 
-MP_ATTR void MP_CALL mp_debug_init(const mp_debugger_options* options)
+MP_ATTR void MP_CALL mp_debug_init(const mp_debug_options* options)
 {
 #ifdef MP_DEBUG
-	(void)memcpy(&debugger, options, sizeof(mp_debugger_options));
-	mp_debugger_enabled_flag = MP_TRUE;
+	(void)memcpy(&debugger, options, sizeof(mp_debug_options));
+	mp_debug_enabled_flag = MP_TRUE;
 #endif
 }
 
@@ -2021,17 +2037,17 @@ MP_ATTR void MP_CALL mp_debug_init_default()
 {
 #ifdef MP_DEBUG
 	debugger.context = NULL;
-	debugger.message = mp_default_debugger_message_callback;
-	debugger.warning = mp_default_debugger_warning_callback;
-	debugger.error = mp_default_debugger_error_callback;
-	mp_debugger_enabled_flag = MP_TRUE;
+	debugger.message = mp_default_debug_message_callback;
+	debugger.warning = mp_default_debug_warning_callback;
+	debugger.error = mp_default_debug_error_callback;
+	mp_debug_enabled_flag = MP_TRUE;
 #endif
 }
 
 MP_ATTR mp_bool MP_CALL mp_debug_enabled()
 {
 #ifdef MP_DEBUG
-	return mp_debugger_enabled_flag;
+	return mp_debug_enabled_flag;
 #else
 	return MP_FALSE;
 #endif
