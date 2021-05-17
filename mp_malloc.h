@@ -284,9 +284,6 @@ namespace mp
 
 #ifdef __cplusplus
 #define MP_ALIGNAS(SIZE) alignas((SIZE))
-#define MP_TLS thread_local
-#else
-#define MP_TLS _Thread_local
 #endif
 
 #ifdef MP_DEBUG
@@ -327,6 +324,7 @@ namespace mp
 #ifndef __cplusplus
 #define MP_ALIGNAS(SIZE) __attribute__((aligned((SIZE))))
 #endif
+#define MP_TLS __thread
 #define MP_PURE __attribute__((pure))
 #define MP_ULTRAPURE __attribute__((const))
 #define MP_PREFETCH(PTR) __builtin_prefetch((PTR), 1, 3)
@@ -361,7 +359,7 @@ namespace mp
 #define MP_INLINE_NEVER __attribute__((noinline))
 #endif
 #define MP_ASSUME(EXPRESSION) __builtin_assume((EXPRESSION))
-#elif defined(_MSVC_LANG)
+#elif defined(_MSC_VER) || defined(_MSVC_LANG)
 #define MP_MSVC
 #include <intrin.h>
 #if defined(_M_X64) || defined(_M_IX86)
@@ -380,6 +378,7 @@ namespace mp
 #ifndef __cplusplus
 #define MP_ALIGNAS(SIZE) __declspec(align(SIZE))
 #endif
+#define MP_TLS __declspec(thread)
 #define MP_PURE __declspec(noalias)
 #define MP_ULTRAPURE MP_PURE
 #define MP_EXPECT(CONDITION, VALUE) (CONDITION)
@@ -759,11 +758,11 @@ static size_t tcache_buffer_size;
 static uint8_t page_size_log2;
 static uint8_t chunk_size_log2;
 #ifdef MP_64BIT
-static bool mp_init_flag;
+static mp_bool mp_init_flag;
 #endif
 #ifdef MP_DEBUG
 static mp_debug_options debugger;
-static bool mp_debug_enabled_flag;
+static mp_bool mp_debug_enabled_flag;
 #endif
 
 // ================================================================
@@ -775,6 +774,27 @@ static bool mp_debug_enabled_flag;
 #else
 #define MP_CONST const
 #endif
+
+#define MP_SIZE_MAP_MAX 4096
+#define MP_SIZE_MAP_MAX_LOG2 12
+#define MP_SIZE_CLASS_COUNT 62
+#define MP_TCACHE_SMALL_BIN_BUFFER_SIZE MP_PTR_SIZE * MP_SIZE_CLASS_COUNT
+
+static MP_CONST uint16_t MP_SIZE_CLASSES[MP_SIZE_CLASS_COUNT] =
+{
+	1,
+	2,
+	4,
+	8, 12,
+	16, 20, 24, 28,
+	32, 40, 48, 56,
+	64, 80, 96, 112,
+	128, 144, 160, 176, 192, 208, 224, 240,
+	256, 272, 288, 304, 320, 352, 384, 416, 448, 480,
+	512, 544, 576, 640, 704, 768, 832, 896, 960,
+	1024, 1088, 1152, 1280, 1408, 1536, 1664, 1792, 1920,
+	2048, 2176, 2304, 2560, 2816, 3072, 3328, 3584, 3840
+};
 
 static MP_CONST uint16_t MP_SIZE_MAP_0[] = { 1 };
 static MP_CONST uint16_t MP_SIZE_MAP_1[] = { 2 };
@@ -788,9 +808,6 @@ static MP_CONST uint16_t MP_SIZE_MAP_8[] = { 256, 272, 288, 304, 320, 352, 384, 
 static MP_CONST uint16_t MP_SIZE_MAP_9[] = { 512, 544, 576, 640, 704, 768, 832, 896, 960 };
 static MP_CONST uint16_t MP_SIZE_MAP_10[] = { 1024, 1088, 1152, 1280, 1408, 1536, 1664, 1792, 1920 };
 static MP_CONST uint16_t MP_SIZE_MAP_11[] = { 2048, 2176, 2304, 2560, 2816, 3072, 3328, 3584, 3840 };
-
-static MP_CONST uint16_t MP_SIZE_MAP_MAX = 4096;
-static MP_CONST uint8_t MP_SIZE_MAP_MAX_LOG2 = 12;
 
 static const uint16_t* const MP_SIZE_MAP[MP_SIZE_MAP_MAX_LOG2] =
 {
@@ -806,47 +823,14 @@ static MP_CONST uint8_t MP_SIZE_MAP_SIZES[MP_SIZE_MAP_MAX_LOG2] =
 	MP_ARRAY_SIZE(MP_SIZE_MAP_8), MP_ARRAY_SIZE(MP_SIZE_MAP_9), MP_ARRAY_SIZE(MP_SIZE_MAP_10), MP_ARRAY_SIZE(MP_SIZE_MAP_11)
 };
 
-static MP_CONST size_t MP_SIZE_CLASS_COUNT =
-	MP_ARRAY_SIZE(MP_SIZE_MAP_0) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) +
-	MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_5) + MP_ARRAY_SIZE(MP_SIZE_MAP_6) + MP_ARRAY_SIZE(MP_SIZE_MAP_7) +
-	MP_ARRAY_SIZE(MP_SIZE_MAP_8) + MP_ARRAY_SIZE(MP_SIZE_MAP_9) + MP_ARRAY_SIZE(MP_SIZE_MAP_10) + MP_ARRAY_SIZE(MP_SIZE_MAP_11);
+static uint8_t MP_SIZE_MAP_OFFSETS[MP_SIZE_MAP_MAX_LOG2];
+static uint32_t MP_SIZE_MAP_RESERVED_COUNTS[MP_SIZE_CLASS_COUNT];
 
-static MP_CONST size_t MP_TCACHE_SMALL_BIN_BUFFER_SIZE = MP_PTR_SIZE * MP_SIZE_CLASS_COUNT;
-
-static MP_CONST uint8_t MP_SIZE_MAP_OFFSETS[MP_SIZE_MAP_MAX_LOG2] =
+MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast16_t mp_reserved_count_of(uint_fast8_t sc)
 {
-	(uint8_t)0,
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_5) + MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_6) + MP_ARRAY_SIZE(MP_SIZE_MAP_5) + MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_7) + MP_ARRAY_SIZE(MP_SIZE_MAP_6) + MP_ARRAY_SIZE(MP_SIZE_MAP_5) + MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_8) + MP_ARRAY_SIZE(MP_SIZE_MAP_7) + MP_ARRAY_SIZE(MP_SIZE_MAP_6) + MP_ARRAY_SIZE(MP_SIZE_MAP_5) + MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_9) + MP_ARRAY_SIZE(MP_SIZE_MAP_8) + MP_ARRAY_SIZE(MP_SIZE_MAP_7) + MP_ARRAY_SIZE(MP_SIZE_MAP_6) + MP_ARRAY_SIZE(MP_SIZE_MAP_5) + MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0)),
-	(uint8_t)(MP_ARRAY_SIZE(MP_SIZE_MAP_10) + MP_ARRAY_SIZE(MP_SIZE_MAP_9) + MP_ARRAY_SIZE(MP_SIZE_MAP_8) + MP_ARRAY_SIZE(MP_SIZE_MAP_7) + MP_ARRAY_SIZE(MP_SIZE_MAP_6) + MP_ARRAY_SIZE(MP_SIZE_MAP_5) + MP_ARRAY_SIZE(MP_SIZE_MAP_4) + MP_ARRAY_SIZE(MP_SIZE_MAP_3) + MP_ARRAY_SIZE(MP_SIZE_MAP_2) + MP_ARRAY_SIZE(MP_SIZE_MAP_1) + MP_ARRAY_SIZE(MP_SIZE_MAP_0))
-};
-
-#define MP_RESERVED_COUNT_OF(K) (sizeof(mp_block_allocator_intrusive) + ((K) - 1) / (K))
-#define MP_RESERVED_COUNT_OF_SC(I, J) MP_RESERVED_COUNT_OF(MP_STRING_JOIN(MP_SIZE_MAP_, I)[J])
-
-static MP_CONST uint32_t MP_SIZE_MAP_RESERVED_COUNTS[MP_SIZE_CLASS_COUNT] =
-{
-	MP_RESERVED_COUNT_OF_SC(0, 0),
-	MP_RESERVED_COUNT_OF_SC(1, 0),
-	MP_RESERVED_COUNT_OF_SC(2, 0),
-	MP_RESERVED_COUNT_OF_SC(3, 0), MP_RESERVED_COUNT_OF_SC(3, 1),
-	MP_RESERVED_COUNT_OF_SC(4, 0), MP_RESERVED_COUNT_OF_SC(4, 1), MP_RESERVED_COUNT_OF_SC(4, 2), MP_RESERVED_COUNT_OF_SC(4, 3),
-	MP_RESERVED_COUNT_OF_SC(5, 0), MP_RESERVED_COUNT_OF_SC(5, 1), MP_RESERVED_COUNT_OF_SC(5, 2), MP_RESERVED_COUNT_OF_SC(5, 3),
-	MP_RESERVED_COUNT_OF_SC(6, 0), MP_RESERVED_COUNT_OF_SC(6, 1), MP_RESERVED_COUNT_OF_SC(6, 2), MP_RESERVED_COUNT_OF_SC(6, 3),
-	MP_RESERVED_COUNT_OF_SC(7, 0), MP_RESERVED_COUNT_OF_SC(7, 1), MP_RESERVED_COUNT_OF_SC(7, 2), MP_RESERVED_COUNT_OF_SC(7, 3), MP_RESERVED_COUNT_OF_SC(7, 4), MP_RESERVED_COUNT_OF_SC(7, 5), MP_RESERVED_COUNT_OF_SC(7, 6), MP_RESERVED_COUNT_OF_SC(7, 7),
-	MP_RESERVED_COUNT_OF_SC(8, 0), MP_RESERVED_COUNT_OF_SC(8, 1), MP_RESERVED_COUNT_OF_SC(8, 2), MP_RESERVED_COUNT_OF_SC(8, 3), MP_RESERVED_COUNT_OF_SC(8, 4), MP_RESERVED_COUNT_OF_SC(8, 5), MP_RESERVED_COUNT_OF_SC(8, 6), MP_RESERVED_COUNT_OF_SC(8, 7), MP_RESERVED_COUNT_OF_SC(8, 8), MP_RESERVED_COUNT_OF_SC(8, 9),
-	MP_RESERVED_COUNT_OF_SC(9, 0), MP_RESERVED_COUNT_OF_SC(9, 1), MP_RESERVED_COUNT_OF_SC(9, 2), MP_RESERVED_COUNT_OF_SC(9, 3), MP_RESERVED_COUNT_OF_SC(9, 4), MP_RESERVED_COUNT_OF_SC(9, 5), MP_RESERVED_COUNT_OF_SC(9, 6), MP_RESERVED_COUNT_OF_SC(9, 7), MP_RESERVED_COUNT_OF_SC(9, 8),
-	MP_RESERVED_COUNT_OF_SC(10, 0), MP_RESERVED_COUNT_OF_SC(10, 1), MP_RESERVED_COUNT_OF_SC(10, 2), MP_RESERVED_COUNT_OF_SC(10, 3),	MP_RESERVED_COUNT_OF_SC(10, 4), MP_RESERVED_COUNT_OF_SC(10, 5), MP_RESERVED_COUNT_OF_SC(10, 6), MP_RESERVED_COUNT_OF_SC(10, 7),	MP_RESERVED_COUNT_OF_SC(10, 8),
-	MP_RESERVED_COUNT_OF_SC(11, 0), MP_RESERVED_COUNT_OF_SC(11, 1), MP_RESERVED_COUNT_OF_SC(11, 2), MP_RESERVED_COUNT_OF_SC(11, 3),	MP_RESERVED_COUNT_OF_SC(11, 4), MP_RESERVED_COUNT_OF_SC(11, 5), MP_RESERVED_COUNT_OF_SC(11, 6), MP_RESERVED_COUNT_OF_SC(11, 7),	MP_RESERVED_COUNT_OF_SC(11, 8),
-};
+	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
+	return sizeof(mp_block_allocator_intrusive) + ((size_t)MP_SIZE_CLASSES[sc] - 1) / MP_SIZE_CLASSES[sc];
+}
 
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_get_small_sc(size_t size)
 {
@@ -1159,7 +1143,9 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 	k = sizeof(mp_tcache) + tcache_buffer_size;
 	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, k);
 	MP_INVARIANT(buffer != NULL);
+#if defined(MP_DEBUG) || !defined(MP_NO_CUSTOM_BACKEND)
 	(void)memset(buffer, 0, k);
+#endif
 	r = (mp_tcache*)buffer;
 	buffer += sizeof(mp_tcache);
 	r->bins = (mp_block_allocator_intrusive**)buffer;
@@ -1302,7 +1288,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocato
 	mp_zero_fill_block_allocator_intrusive_marked_map((void*)allocator->marked_map);
 	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
 	reserved_count = MP_SIZE_MAP_RESERVED_COUNTS[sc];
-	MP_INVARIANT(reserved_count == MP_RESERVED_COUNT_OF(block_size));
+	MP_INVARIANT(reserved_count == mp_reserved_count_of(block_size));
 	MP_PREFETCH((uint8_t*)allocator + reserved_count * block_size);
 	allocator->next = NULL;
 	MP_INVARIANT(reserved_count >= 1);
@@ -1567,7 +1553,9 @@ MP_INLINE_ALWAYS static void mp_lcache_init()
 	k = lcache_bin_count * sizeof(mp_chunk_list);
 	lcache_bins = (mp_chunk_list*)mp_persistent_malloc_impl(&internal_persistent_allocator, k);
 	MP_INVARIANT(lcache_bins != NULL);
+#if defined(MP_DEBUG) || !defined(MP_NO_CUSTOM_BACKEND)
 	(void)memset((size_t*)lcache_bins, 0, k);
+#endif
 #else
 	uint_fast8_t n;
 	n = 64 - chunk_size_log2;
@@ -1622,7 +1610,7 @@ MP_INLINE_ALWAYS static void mp_tcache_lookup_init()
 }
 #endif
 
-MP_TLS static mp_tcache* this_tcache;
+static MP_TLS mp_tcache* this_tcache;
 
 MP_INLINE_ALWAYS static mp_block_allocator* mp_tcache_find_allocator(const void* ptr)
 {
@@ -1781,6 +1769,7 @@ MP_INLINE_ALWAYS static void mp_this_tcache_check_integrity()
 MP_EXTERN_C_BEGIN
 MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 {
+	uint32_t i, j, n;
 #ifdef MP_TARGET_WINDOWS
 	SYSTEM_INFO info;
 	GetSystemInfo(&info);
@@ -1799,6 +1788,18 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	MP_INVARIANT(chunk_size >= (32 * 4096));
 	tcache_large_bin_buffer_size = MP_PTR_SIZE * ((size_t)chunk_size_log2 - page_size_log2);
 	tcache_buffer_size = (MP_TCACHE_SMALL_BIN_BUFFER_SIZE + tcache_large_bin_buffer_size) * 2;
+	n = i = 0;
+	for (; i != MP_SIZE_MAP_MAX_LOG2; ++i)
+	{
+		MP_SIZE_MAP_OFFSETS[i] = n;
+		n += MP_SIZE_MAP_SIZES[i];
+	}
+	for (i = 0; i != MP_SIZE_MAP_MAX_LOG2; ++i)
+	{
+		n = 0;
+		for (j = 0; j != MP_SIZE_MAP_SIZES[i]; ++j)
+			MP_SIZE_MAP_RESERVED_COUNTS[i] = sizeof(mp_block_allocator_intrusive) + ((size_t)MP_SIZE_MAP[i][j] - 1) / MP_SIZE_MAP[i][j];
+	}
 #ifndef MP_NO_CUSTOM_BACKEND
 	MP_UNLIKELY_IF(options->backend != NULL)
 	{
