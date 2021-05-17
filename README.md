@@ -33,51 +33,51 @@ If MPMalloc runs out of memory, by default it will request more memory to the sy
 ## API
 
 ```c
-void				mp_init(const mp_init_options* options);
-void				mp_init_default();
-mp_bool				mp_enabled();
-void				mp_cleanup();
-void				mp_thread_init();
-mp_bool				mp_thread_enabled();
-void				mp_thread_cleanup();
+void		mp_init(const mp_init_options* options);
+void		mp_init_default();
+mp_bool		mp_enabled();
+void		mp_cleanup();
+void		mp_thread_init();
+mp_bool		mp_thread_enabled();
+void		mp_thread_cleanup();
 
-void*	            mp_malloc(size_t size);
-mp_bool				mp_resize(void* ptr, size_t old_size, size_t new_size);
-void*	            mp_realloc(void* ptr, size_t old_size, size_t new_size);
-void				mp_free(void* ptr, size_t size);
-size_t				mp_round_size(size_t size);
+void*		mp_malloc(size_t size);
+mp_bool		mp_resize(void* ptr, size_t old_size, size_t new_size);
+void*		mp_realloc(void* ptr, size_t old_size, size_t new_size);
+void		mp_free(void* ptr, size_t size);
+size_t		mp_round_size(size_t size);
 
-void*	            mp_tcache_malloc(size_t size, mp_flags flags);
-mp_bool				mp_tcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
-void				mp_tcache_free(void* ptr, size_t size);
-size_t				mp_tcache_round_size(size_t size);
-size_t				mp_tcache_min_size();
-size_t				mp_tcache_max_size();
+void*		mp_tcache_malloc(size_t size, mp_flags flags);
+mp_bool		mp_tcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
+void		mp_tcache_free(void* ptr, size_t size);
+size_t		mp_tcache_round_size(size_t size);
+size_t		mp_tcache_min_size();
+size_t		mp_tcache_max_size();
 
-void*	            mp_lcache_malloc(size_t size, mp_flags flags);
-mp_bool				mp_lcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
-void				mp_lcache_free(void* ptr, size_t size);
-size_t				mp_lcache_round_size(size_t size);
-size_t				mp_lcache_min_size();
-size_t				mp_lcache_max_size();
+void*		mp_lcache_malloc(size_t size, mp_flags flags);
+mp_bool		mp_lcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
+void		mp_lcache_free(void* ptr, size_t size);
+size_t		mp_lcache_round_size(size_t size);
+size_t		mp_lcache_min_size();
+size_t		mp_lcache_max_size();
 
-void*	            mp_persistent_malloc(size_t size);
-void				mp_persistent_cleanup();
+void*		mp_persistent_malloc(size_t size);
+void		mp_persistent_cleanup();
 
-void*	            mp_backend_malloc(size_t size);
-mp_bool				mp_backend_resize(void* ptr, size_t old_size, size_t new_size);
-void				mp_backend_free(void* ptr, size_t size);
-void				mp_backend_purge(void* ptr, size_t size);
-size_t				mp_backend_required_alignment();
+void*		mp_backend_malloc(size_t size);
+mp_bool		mp_backend_resize(void* ptr, size_t old_size, size_t new_size);
+void		mp_backend_free(void* ptr, size_t size);
+void		mp_backend_purge(void* ptr, size_t size);
+size_t		mp_backend_required_alignment();
 
-void				mp_debug_init(const mp_debug_options* options);
-void				mp_debug_init_default();
-mp_bool				mp_debug_enabled();
-void				mp_debug_message(const char* message, size_t size);
-void				mp_debug_warning(const char* message, size_t size);
-void				mp_debug_error(const char* message, size_t size);
-mp_bool				mp_debug_validate_memory(const void* ptr, size_t size);
-mp_bool				mp_debug_overflow_check(const void* ptr, size_t size);
+void		mp_debug_init(const mp_debug_options* options);
+void		mp_debug_init_default();
+mp_bool		mp_debug_enabled();
+void		mp_debug_message(const char* message, size_t size);
+void		mp_debug_warning(const char* message, size_t size);
+void		mp_debug_error(const char* message, size_t size);
+mp_bool		mp_debug_validate_memory(const void* ptr, size_t size);
+mp_bool		mp_debug_overflow_check(const void* ptr, size_t size);
 ```
 
 ## TODO
