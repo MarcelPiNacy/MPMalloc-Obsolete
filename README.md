@@ -84,3 +84,15 @@ void        mpmm_debugger_message(const char* message, size_t size);
 void        mpmm_debugger_warning(const char* message, size_t size);
 void        mpmm_debugger_error(const char* message, size_t size);
 ```
+
+## TODO
+- Fix strange bug when freeing certain size classes.
+- Fix ABA issue with recover_list's push function.
+- Add a way to return unused block allocators (chunks) from the local TCache to the LCache.
+- Give more options for malloc/free.
+- Add support for aligned allocation.
+- Add a mechanism for returning physical memory to the OS, via DiscardVirtualMemory/madvise.
+- Add a mechanism for returning virtual memory addresses to the OS, via VirtualFree/munmap.  
+- Add support for huge pages.
+- (Optional) Since small allocations rely on bitmask allocators, attempt to compact memory using a similar system to Emery Berger's MESH.
+- (Optional) Attempt to achieve wait-freedom for certain cases.
