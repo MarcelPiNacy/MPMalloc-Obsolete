@@ -6,7 +6,7 @@ Currently GCC, Clang and MSVC are supported.
 
 ## Platform Support
 
-MPMalloc has been tested on Windows 10. It *might* work on Linux.
+MPMalloc has been tested on Windows 10. It *should* work on Linux.
 
 ## Overview
 
