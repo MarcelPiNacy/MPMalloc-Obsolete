@@ -39,6 +39,10 @@
 
 #ifndef MP_CACHE_LINE_SIZE
 #define MP_CACHE_LINE_SIZE 64
+#else
+#if (MP_CACHE_LINE_SIZE != 32) && (MP_CACHE_LINE_SIZE != 64) && (MP_CACHE_LINE_SIZE != 128)
+#error "MPMALLOC: Error, MP_CACHE_LINE_SIZE must be equal to 32, 64 or 128."
+#endif
 #endif
 
 #if defined(MP_DEBUG) && !defined(MP_JUNK_VALUE)
@@ -311,6 +315,7 @@ namespace mp
 #if defined(__clang__) || defined(__GNUC__)
 #define MP_CLANG_OR_GCC
 #if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
 #define MP_SPIN_WAIT __builtin_ia32_pause()
 #elif defined(__arm__)
 #define MP_SPIN_WAIT __yield()
@@ -336,6 +341,18 @@ namespace mp
 #define MP_CTZ_64(MASK) __builtin_ctzll((MASK))
 #define MP_CLZ_32(MASK) __builtin_clz((MASK))
 #define MP_CLZ_64(MASK) __builtin_clzll((MASK))
+#ifdef __SSE2__
+#define MP_HAS_SSE2
+#endif
+#ifdef __AVX__
+#define MP_HAS_AVX
+#endif
+#ifdef __AVX2__
+#define MP_HAS_AVX2
+#endif
+#ifdef __AVX512F__
+#define MP_HAS_AVX512F
+#endif
 #ifdef MP_DEBUG
 #define MP_INLINE_ALWAYS
 #define MP_INLINE_NEVER
@@ -580,31 +597,80 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 //	MISCELLANEOUS
 // ================================================================
 
-MP_INLINE_ALWAYS static void mp_fill_cold_ptrs(size_t* i, size_t count, uint8_t value)
+#define MP_ZERO_COLD_16(PTR) _mm_stream_si128((__m128i*)PTR, _mm_setzero_si128())
+#define MP_ZERO_COLD_32(PTR) _mm256_stream_si256((__m256i*)PTR, _mm256_setzero_si256())
+#define MP_ZERO_COLD_64(PTR) _mm512_stream_si512((__m512i*)PTR, _mm512_setzero_si512())
+
+MP_INLINE_ALWAYS static void mp_zero_fill_block_allocator_marked_map(void* ptr)
 {
-	size_t* end = i + count;
-#if (MP_CACHE_LINE_SIZE >= 64) && defined(MP_HAS_AVX512F)
-	for (; end - i >= MP_PTRS_PER_ZMMWORD; i += MP_PTRS_PER_ZMMWORD)
-		_mm512_stream_si512((__m512i*)i, _mm512_setzero_si512());
+	uint8_t* i = (uint8_t*)ptr;
+#if (MP_CACHE_LINE_SIZE / 2) == 64
+#ifdef MP_HAS_AVX512F
+	MP_ZERO_COLD_64(i);
+#elif defined(MP_HAS_AVX)
+	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 32);
+#elif defined(MP_HAS_SSE2)
+	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 16);
+	MP_ZERO_COLD_32(i + 32); MP_ZERO_COLD_32(i + 48);
+#else
+	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE / 2);
 #endif
-#if defined(MP_HAS_AVX)
-	for (; end - i >= MP_PTRS_PER_YMMWORD; i += MP_PTRS_PER_YMMWORD)
-		_mm256_stream_si256((__m256i*)i, _mm256_setzero_si256());
+#elif (MP_CACHE_LINE_SIZE / 2) == 32
+#ifdef MP_HAS_AVX
+	MP_ZERO_COLD_32(i);
+#elif defined(MP_HAS_SSE2)
+	MP_ZERO_COLD_32(i);
+	MP_ZERO_COLD_32(i + 16);
+#else
+	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE / 2);
 #endif
-#if defined(MP_HAS_SSE2)
-	for (; end - i >= MP_PTRS_PER_XMMWORD; i += MP_PTRS_PER_XMMWORD)
-		_mm_stream_si128((__m128i*)i, _mm_setzero_si128());
+#elif (MP_CACHE_LINE_SIZE / 2) == 16
+#ifdef MP_HAS_SSE2
+	MP_ZERO_COLD_32(i);
+#else
+	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE / 2);
 #endif
-#if defined(MP_64BIT) && defined(MP_HAS_SSE2) && MP_PTRS_PER_QWORD != 0
-	for (; end - i >= MP_PTRS_PER_QWORD; i += MP_PTRS_PER_QWORD)
-		_mm_stream_si64((int64_t*)i, 0);
 #endif
-#if defined(MP_64BIT) && defined(MP_HAS_SSE2) && MP_PTRS_PER_DWORD != 0
-	for (; end - i >= MP_PTRS_PER_DWORD; i += MP_PTRS_PER_DWORD)
-		_mm_stream_si32((int32_t*)i, 0);
+}
+
+MP_INLINE_ALWAYS static void mp_zero_fill_block_allocator_intrusive_marked_map(void* ptr)
+{
+	uint8_t* i = (uint8_t*)ptr;
+#if MP_CACHE_LINE_SIZE == 128
+#ifdef MP_HAS_AVX512F
+	MP_ZERO_COLD_64(i);
+	MP_ZERO_COLD_64(i + 64);
+#elif defined(MP_HAS_AVX)
+	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 32);
+	MP_ZERO_COLD_32(i + 64); MP_ZERO_COLD_32(i + 96);
+#elif defined(MP_HAS_SSE2)
+	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 16); MP_ZERO_COLD_32(i + 32); MP_ZERO_COLD_32(i + 48);
+	MP_ZERO_COLD_32(i + 64); MP_ZERO_COLD_32(i + 80); MP_ZERO_COLD_32(i + 96); MP_ZERO_COLD_32(i + 112);
+#else
+	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE);
 #endif
-	MP_UNLIKELY_IF(i != end)
-		(void)memset(i, value, (end - i) << MP_PTR_SIZE_LOG2);
+#elif MP_CACHE_LINE_SIZE == 64
+#ifdef MP_HAS_AVX512F
+	MP_ZERO_COLD_64(i);
+#elif defined(MP_HAS_AVX)
+	MP_ZERO_COLD_32(i);
+	MP_ZERO_COLD_32(i + 32);
+#elif defined(MP_HAS_SSE2)
+	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 16);
+	MP_ZERO_COLD_32(i + 32); MP_ZERO_COLD_32(i + 48);
+#else
+	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE);
+#endif
+#elif MP_CACHE_LINE_SIZE == 32
+#ifdef MP_HAS_AVX
+	MP_ZERO_COLD_32(i);
+#elif defined(MP_HAS_SSE2)
+	MP_ZERO_COLD_32(i);
+	MP_ZERO_COLD_32(i + 16);
+#else
+	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE);
+#endif
+#endif
 }
 
 // ================================================================
@@ -825,8 +891,7 @@ static void mp_default_debug_error_callback(void* context, const char* message, 
 MP_INLINE_ALWAYS static void mp_init_redzone(void* buffer, size_t size)
 {
 #ifdef MP_CHECK_OVERFLOW
-	buffer = (uint8_t*)buffer + size;
-	mp_fill_cold_ptrs((size_t*)buffer, MP_REDZONE_SIZE >> MP_PTR_SIZE_LOG2, MP_REDZONE_VALUE);
+	(void)memset((uint8_t*)buffer + size, MP_REDZONE_VALUE, MP_REDZONE_SIZE);
 #endif
 }
 
@@ -835,7 +900,6 @@ MP_INLINE_ALWAYS static void mp_init_redzone(void* buffer, size_t size)
 // ================================================================
 
 #ifdef MP_TARGET_WINDOWS
-typedef DWORD mp_thread_id;
 typedef PVOID(WINAPI* VirtualAlloc2_t)(HANDLE Process, PVOID BaseAddress, SIZE_T Size, ULONG AllocationType, ULONG PageProtection, MEM_EXTENDED_PARAMETER* ExtendedParameters, ULONG ParameterCount);
 
 static HANDLE process_handle;
@@ -880,9 +944,6 @@ MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 }
 
 #elif defined(MP_TARGET_LINUX)
-
-typedef pthread_t mp_thread_id;
-
 MP_INLINE_ALWAYS static void mp_os_init() { }
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
@@ -911,8 +972,7 @@ MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 }
 #endif
 
-typedef MP_ATOMIC(mp_thread_id) mp_atomic_thread_id;
-
+#ifndef MP_NO_CUSTOM_BACKEND
 static void mp_empty_function() { }
 
 static mp_fn_init backend_init = mp_os_init;
@@ -921,6 +981,7 @@ static mp_fn_malloc backend_malloc = mp_os_malloc;
 static mp_fn_resize backend_resize = mp_os_resize;
 static mp_fn_free backend_free = mp_os_free;
 static mp_fn_purge backend_purge = mp_os_purge;
+#endif
 
 // ================================================================
 //	RANDOM
@@ -1062,7 +1123,7 @@ MP_ATTR void MP_CALL mp_persistent_cleanup_impl(mp_persistent_allocator* allocat
 	for (n = (mp_persistent_node*)MP_ATOMIC_SWAP_ACQ_PTR(allocator, NULL); n != NULL; n = next)
 	{
 		next = n->next;
-		backend_free(n, chunk_size);
+		mp_backend_free(n, chunk_size);
 	}
 }
 
@@ -1097,7 +1158,7 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 	k = sizeof(mp_tcache) + tcache_buffer_size;
 	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, k);
 	MP_INVARIANT(buffer != NULL);
-	mp_fill_cold_ptrs((size_t*)buffer, k >> MP_PTR_SIZE_LOG2, 0);
+	(void)memset(buffer, 0, k);
 	r = (mp_tcache*)buffer;
 	buffer += sizeof(mp_tcache);
 	r->bins = (mp_block_allocator_intrusive**)buffer;
@@ -1214,7 +1275,7 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_block_allocator_intrusive_owns(mp_blo
 MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocator, uint_fast8_t block_size_log2, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner, void* buffer)
 {
 	uint_fast32_t mask_count, bit_count;
-	mp_fill_cold_ptrs((size_t*)allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT, 0);
+	mp_zero_fill_block_allocator_marked_map((void*)allocator->marked_map);
 	MP_PREFETCH(buffer);
 	MP_INVARIANT(chunk_size_log2 > block_size_log2);
 	MP_INVARIANT(allocator != NULL);
@@ -1237,7 +1298,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocato
 {
 	uint_fast32_t mask_count, bit_count, reserved_count;
 	MP_INVARIANT(allocator != NULL);
-	mp_fill_cold_ptrs((size_t*)allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT, 0);
+	mp_zero_fill_block_allocator_intrusive_marked_map((void*)allocator->marked_map);
 	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
 	reserved_count = MP_SIZE_MAP_RESERVED_COUNTS[sc];
 	MP_INVARIANT(reserved_count == MP_RESERVED_COUNT_OF(block_size));
@@ -1453,7 +1514,7 @@ static void* mp_trie_insert(mp_trie_root* root, size_t key, uint_fast8_t value_s
 		MP_LIKELY_IF(MP_ATOMIC_CAS_REL_PTR(root, &branch, new_branch))
 		{
 			branch = new_branch;
-			mp_fill_cold_ptrs((size_t*)branch, real_branch_size >> MP_PTR_SIZE_LOG2, 0);
+			(void)memset((size_t*)branch, 0, real_branch_size);
 			break;
 		}
 		mp_lcache_free((void*)new_branch, real_branch_size);
@@ -1504,7 +1565,7 @@ MP_INLINE_ALWAYS static void mp_lcache_init()
 	lcache_bin_count = 1 << (32 - chunk_size_log2);
 	k = lcache_bin_count * sizeof(mp_chunk_list);
 	lcache_bins = (mp_chunk_list*)mp_persistent_malloc_impl(&internal_persistent_allocator, k);
-	mp_fill_cold_ptrs((size_t*)lcache_bins, k >> MP_PTR_SIZE_LOG2, 0);
+	(void)memset((size_t*)lcache_bins, 0, k);
 	MP_INVARIANT(lcache_bins != NULL);
 #else
 	uint_fast8_t n;
@@ -1737,20 +1798,26 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	MP_INVARIANT(chunk_size >= (32 * 4096));
 	tcache_large_bin_buffer_size = MP_PTR_SIZE * ((size_t)chunk_size_log2 - page_size_log2);
 	tcache_buffer_size = (MP_TCACHE_SMALL_BIN_BUFFER_SIZE + tcache_large_bin_buffer_size) * 2;
-
-	MP_UNLIKELY_IF(options != NULL)
+#ifndef MP_NO_CUSTOM_BACKEND
+	MP_UNLIKELY_IF(options->backend != NULL)
 	{
-		MP_UNLIKELY_IF(options->backend != NULL)
-		{
-			backend_init = options->backend->init;
-			backend_cleanup = options->backend->cleanup;
-			backend_malloc = options->backend->malloc;
-			backend_resize = options->backend->resize;
-			backend_free = options->backend->free;
-			backend_purge = options->backend->purge;
-		}
-}	
+		MP_INVARIANT(
+			backend_init != NULL && backend_cleanup != NULL &&
+			backend_malloc != NULL && backend_resize != NULL &&
+			backend_free != NULL && backend_purge != NULL);
+		backend_init = options->backend->init;
+		backend_cleanup = options->backend->cleanup;
+		backend_malloc = options->backend->malloc;
+		backend_resize = options->backend->resize;
+		backend_free = options->backend->free;
+		backend_purge = options->backend->purge;
+	}
 	backend_init();
+#else
+	MP_INVARIANT(options->backend == NULL);
+	mp_os_init();
+#endif
+
 	mp_lcache_init();
 #ifdef MP_32BIT
 	mp_tcache_lookup_init();
@@ -1987,9 +2054,13 @@ MP_ATTR void* MP_CALL mp_backend_malloc(size_t size)
 {
 	void* r;
 	size_t k;
-	MP_INVARIANT(backend_malloc != NULL);
 	k = mp_round_size(MP_SIZE_WITH_REDZONE(size));
+#ifndef MP_NO_CUSTOM_BACKEND
+	MP_INVARIANT(backend_malloc != NULL);
 	r = backend_malloc(k);
+#else
+	r = mp_os_malloc(k);
+#endif
 	MP_DEBUG_JUNK_FILL(r, size);
 	mp_init_redzone(r, size);
 	return r;
@@ -1998,11 +2069,17 @@ MP_ATTR void* MP_CALL mp_backend_malloc(size_t size)
 MP_ATTR mp_bool MP_CALL mp_backend_resize(void* ptr, size_t old_size, size_t new_size)
 {
 	size_t k;
-	MP_INVARIANT(backend_resize != NULL);
+	MP_INVARIANT(ptr != NULL);
 	mp_debug_overflow_check(ptr, old_size);
 	k = mp_round_size(MP_SIZE_WITH_REDZONE(new_size));
+#ifndef MP_NO_CUSTOM_BACKEND
+	MP_INVARIANT(backend_resize != NULL);
 	MP_UNLIKELY_IF(backend_resize(ptr, old_size, k))
 		return MP_FALSE;
+#else
+	MP_UNLIKELY_IF(mp_os_resize(ptr, old_size, k))
+		return MP_FALSE;
+#endif
 	mp_init_redzone(ptr, new_size);
 	MP_DEBUG_JUNK_FILL((uint8_t*)ptr + old_size, new_size - old_size);
 	return MP_TRUE;
@@ -2010,14 +2087,24 @@ MP_ATTR mp_bool MP_CALL mp_backend_resize(void* ptr, size_t old_size, size_t new
 
 MP_ATTR void MP_CALL mp_backend_free(void* ptr, size_t size)
 {
+	MP_INVARIANT(ptr != NULL);
+#ifndef MP_NO_CUSTOM_BACKEND
 	MP_INVARIANT(backend_free != NULL);
 	backend_free(ptr, size);
+#else
+	mp_os_free(ptr, size);
+#endif
 }
 
 MP_ATTR void MP_CALL mp_backend_purge(void* ptr, size_t size)
 {
+	MP_INVARIANT(ptr != NULL);
+#ifndef MP_NO_CUSTOM_BACKEND
 	MP_INVARIANT(backend_purge != NULL);
 	backend_purge(ptr, size);
+#else
+	mp_os_purge(ptr, size);
+#endif
 }
 
 MP_ATTR size_t MP_CALL mp_backend_required_alignment()
