@@ -1070,7 +1070,6 @@ MP_INLINE_ALWAYS static mp_tcache* mp_tcache_acquire_fast()
 		MP_ATOMIC_ACQUIRE_FENCE;
 		MP_UNLIKELY_IF(prior.head == NULL)
 			return NULL;
-		MP_PREFETCH(prior.head);
 		desired.head = prior.head->next;
 		desired.generation = prior.generation + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCAS_ACQ(&tcache_freelist, &prior, &desired))
@@ -1226,13 +1225,13 @@ MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocat
 MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocator_intrusive* allocator, uint_fast32_t block_size, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner)
 {
 	uint_fast32_t mask_count, bit_count, reserved_count;
+	MP_INVARIANT(allocator != NULL);
 	mp_fill_cold_ptrs((size_t*)allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT, 0);
 	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
 	reserved_count = MP_SIZE_MAP_RESERVED_COUNTS[sc];
 	MP_INVARIANT(reserved_count == MP_RESERVED_COUNT_OF(block_size));
-	MP_INVARIANT(allocator != NULL);
-	allocator->next = NULL;
 	MP_PREFETCH((uint8_t*)allocator + reserved_count * block_size);
+	allocator->next = NULL;
 	MP_INVARIANT(reserved_count >= 1);
 	allocator->free_count = MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - reserved_count;
 	MP_INVARIANT(reserved_count < allocator->free_count);
