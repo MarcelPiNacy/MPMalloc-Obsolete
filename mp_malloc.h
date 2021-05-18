@@ -85,6 +85,12 @@ typedef _Bool mp_bool;
 #define MP_TRUE ((mp_bool)1)
 
 MP_EXTERN_C_BEGIN
+typedef enum mp_init_flag_bits
+{
+	MP_INIT_ENABLE_LARGE_PAGES = 63
+} mp_init_flag_bits;
+typedef uint64_t mp_init_flags;
+
 typedef enum mp_malloc_flag_bits
 {
 	MP_ENABLE_FALLBACK = 1,
@@ -120,6 +126,7 @@ typedef struct mp_backend_options
 
 typedef struct mp_init_options
 {
+	mp_init_flags flags;
 	const mp_backend_options* backend;
 } mp_init_options;
 
@@ -176,6 +183,12 @@ MP_ATTR mp_bool				MP_CALL mp_backend_resize(void* ptr, size_t old_size, size_t 
 MP_ATTR void				MP_CALL mp_backend_free(void* ptr, size_t size);
 MP_ATTR void				MP_CALL mp_backend_purge(void* ptr, size_t size);
 MP_ATTR size_t				MP_CALL mp_backend_required_alignment();
+
+MP_ATTR size_t				MP_CALL mp_cache_line_size();
+MP_ATTR size_t				MP_CALL mp_page_size();
+MP_ATTR size_t				MP_CALL mp_large_page_size();
+MP_ATTR void*				MP_CALL mp_lowest_address();
+MP_ATTR void*				MP_CALL mp_highest_address();
 
 MP_ATTR void				MP_CALL mp_debug_init(const mp_debug_options* options);
 MP_ATTR void				MP_CALL mp_debug_init_default();
@@ -302,9 +315,11 @@ namespace mp
 #include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
+#include <hugetlbfs.h>
 #elif defined(_WIN32)
 #define MP_TARGET_WINDOWS
 #include <Windows.h>
+#include <ntsecapi.h>
 #else
 #error "MPMALLOC: UNSUPPORTED TARGET OPERATING SYSTEM"
 #endif
@@ -331,8 +346,6 @@ namespace mp
 #define MP_EXPECT(CONDITION, VALUE) __builtin_expect((long)(CONDITION), (VALUE))
 #define MP_LIKELY_IF(CONDITION) if (MP_EXPECT(CONDITION, MP_TRUE))
 #define MP_UNLIKELY_IF(CONDITION) if (MP_EXPECT(CONDITION, MP_FALSE))
-#define MP_ROR_32(MASK, COUNT) (uint32_t)(((MASK) << (COUNT)) | ((MASK) >> (32 - (COUNT))))
-#define MP_ROL_32(MASK, COUNT) (uint32_t)(((MASK) >> (COUNT)) | ((MASK) >> (32 - (COUNT))))
 #define MP_POPCOUNT_32(MASK) __builtin_popcount((MASK))
 #define MP_POPCOUNT_64(MASK) __builtin_popcountll((MASK))
 #define MP_CTZ_32(MASK) __builtin_ctz((MASK))
@@ -402,8 +415,6 @@ namespace mp
 #define MP_CLZ_32(MASK) (uint_fast8_t)_CountLeadingZeros((MASK))
 #define MP_CLZ_64(MASK) (uint_fast8_t)_CountLeadingZeros64((MASK))
 #else
-#define MP_ROR_32(MASK, COUNT) (uint32_t)_rotr((MASK), (COUNT))
-#define MP_ROL_32(MASK, COUNT) (uint32_t)_rotl((MASK), (COUNT))
 #define MP_POPCOUNT_32(MASK) (uint_fast8_t)__popcnt((MASK))
 #define MP_POPCOUNT_64(MASK) (uint_fast8_t)__popcnt64((MASK))
 #define MP_CTZ_32(MASK) (uint_fast8_t)_tzcnt_u32((MASK))
@@ -750,13 +761,14 @@ typedef struct mp_shared_counter { MP_SHARED_ATTR mp_atomic_size_t value; } mp_s
 //	PLATFORM INFO
 // ================================================================
 
-static void* min_chunk;
+static void* min_address;
 static void* max_address;
 static size_t page_size;
 static size_t chunk_size;
 static size_t chunk_size_mask;
 static size_t tcache_large_bin_buffer_size;
 static size_t tcache_buffer_size;
+static size_t large_page_size;
 static uint8_t page_size_log2;
 static uint8_t chunk_size_log2;
 #ifdef MP_64BIT
@@ -831,7 +843,7 @@ static uint32_t MP_SIZE_MAP_RESERVED_COUNTS[MP_SIZE_CLASS_COUNT];
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast16_t mp_reserved_count_of(uint_fast8_t sc)
 {
 	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
-	return sizeof(mp_block_allocator_intrusive) + ((size_t)MP_SIZE_CLASSES[sc] - 1) / MP_SIZE_CLASSES[sc];
+	return (sizeof(mp_block_allocator_intrusive) + ((size_t)MP_SIZE_CLASSES[sc] - 1)) / MP_SIZE_CLASSES[sc];
 }
 
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_get_small_sc(size_t size)
@@ -891,27 +903,64 @@ typedef PVOID(WINAPI* VirtualAlloc2_t)(HANDLE Process, PVOID BaseAddress, SIZE_T
 
 static HANDLE process_handle;
 static VirtualAlloc2_t virtualalloc2;
+static ULONG va2_flags;
 static MEM_ADDRESS_REQUIREMENTS va2_addr_req;
 static MEM_EXTENDED_PARAMETER va2_ext_param;
 
-MP_INLINE_ALWAYS static void mp_os_init()
+MP_INLINE_ALWAYS static void mp_os_init(mp_bool enable_large_pages)
 {
-	HMODULE m;
+	HANDLE h;
+	DWORD n;
+	TOKEN_USER users[64];
+	LSA_HANDLE policy;
+	LSA_OBJECT_ATTRIBUTES attrs;
+	LSA_UNICODE_STRING rights;
+	TOKEN_PRIVILEGES p;
 	process_handle = GetCurrentProcess();
-	m = GetModuleHandle(TEXT("KernelBase.DLL"));
-	MP_INVARIANT(m != NULL);
-	virtualalloc2 = (VirtualAlloc2_t)GetProcAddress(m, "VirtualAlloc2");
+	virtualalloc2 = (VirtualAlloc2_t)GetProcAddress(GetModuleHandle(TEXT("KernelBase.DLL")), "VirtualAlloc2");
 	MP_INVARIANT(virtualalloc2 != NULL);
 	va2_addr_req.Alignment = chunk_size;
 	va2_addr_req.HighestEndingAddress = max_address;
-	va2_addr_req.LowestStartingAddress = min_chunk;
+	va2_addr_req.LowestStartingAddress = min_address;
 	va2_ext_param.Type = MemExtendedParameterAddressRequirements;
 	va2_ext_param.Pointer = &va2_addr_req;
+	va2_flags = MEM_RESERVE | MEM_COMMIT;
+	if (!enable_large_pages)
+		return;
+	h = NULL;
+	MP_UNLIKELY_IF(!OpenProcessToken(process_handle, TOKEN_QUERY, &h))
+		goto Error;
+	n = sizeof(users);
+	MP_UNLIKELY_IF(!GetTokenInformation(h, TokenUser, users, n, &n))
+		goto Error;
+	CloseHandle(h);
+	(void)memset(&attrs, 0, sizeof(attrs));
+	MP_UNLIKELY_IF(!LsaOpenPolicy(NULL, &attrs, POLICY_CREATE_ACCOUNT | POLICY_LOOKUP_NAMES, &policy))
+		goto Error;
+	rights.Buffer = (PWSTR)SE_LOCK_MEMORY_NAME;
+	rights.Length = (USHORT)(wcslen(rights.Buffer) * sizeof(WCHAR));
+	rights.MaximumLength = rights.Length + (USHORT)sizeof(WCHAR);
+	MP_UNLIKELY_IF(!LsaAddAccountRights(policy, users->User.Sid, &rights, 1))
+		goto Error;
+	h = NULL;
+	MP_UNLIKELY_IF(!OpenProcessToken(process_handle, TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &h))
+		goto Error;
+	p.PrivilegeCount = 1;
+	p.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	MP_UNLIKELY_IF(!LookupPrivilegeValue(NULL, SE_LOCK_MEMORY_NAME, &p.Privileges[0].Luid))
+		goto Error;
+	MP_UNLIKELY_IF(!AdjustTokenPrivileges(h, FALSE, &p, 0, NULL, 0))
+		goto Error;
+	va2_flags |= MEM_LARGE_PAGES;
+	CloseHandle(h);
+	return;
+Error:
+	abort();
 }
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
 {
-	return virtualalloc2(process_handle, NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE, &va2_ext_param, 1);
+	return virtualalloc2(process_handle, NULL, size, va2_flags, PAGE_READWRITE, &va2_ext_param, 1);
 }
 
 MP_INLINE_ALWAYS static mp_bool mp_os_resize(void* ptr, size_t old_size, size_t new_size) { return MP_FALSE; }
@@ -931,11 +980,21 @@ MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 }
 
 #elif defined(MP_TARGET_LINUX)
-MP_INLINE_ALWAYS static void mp_os_init() { }
+
+static int mmap_protection;
+static int mmap_flags;
+
+MP_INLINE_ALWAYS static void mp_os_init(mp_bool enable_large_pages)
+{
+	mmap_protection = PROT_READ | PROT_WRITE;
+	mmap_flags = MAP_ANON | MAP_UNINITIALIZED;
+	if (enable_large_pages)
+		mmap_flags |= MAP_HUGETLB;
+}
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
 {
-	uint8_t* tmp = mmap(NULL, size * 2, PROT_READ | PROT_WRITE, MAP_ANON | MAP_UNINITIALIZED, -1, 0);
+	uint8_t* tmp = mmap(NULL, size * 2, mmap_protection, mmap_flags, -1, 0);
 	uint8_t* tmp_limit = base + chunk_size * 2;
 	uint8_t* r = (uint8_t*)MP_ALIGN_FLOOR_BASE((size_t)tmp, chunk_size_mask);
 	uint8_t* r_limit = base + chunk_size;
@@ -969,22 +1028,6 @@ static mp_fn_resize backend_resize = mp_os_resize;
 static mp_fn_free backend_free = mp_os_free;
 static mp_fn_purge backend_purge = mp_os_purge;
 #endif
-
-// ================================================================
-//	RANDOM
-// ================================================================
-
-typedef uint32_t mp_romu_mono32;
-
-#define MP_ROMU_MONO32_INIT(SEED) (((SEED) & 0x1fffffffu) + 1156979152u)
-
-MP_INLINE_ALWAYS static uint_fast16_t mp_romu_mono32_get(mp_romu_mono32* state)
-{
-	uint_fast16_t r = (uint_fast16_t)(*state & 0xffff);
-	*state *= 3611795771U;
-	*state = MP_ROL_32(*state, 12);
-	return r;
-}
 
 // ================================================================
 //	LOCK-FREE CHUNK FREE LIST
@@ -1343,44 +1386,38 @@ MP_INLINE_NEVER static uint_fast32_t mp_block_allocator_reclaim(size_t* free_map
 
 MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allocator)
 {
-	void* r;
 	uint_fast32_t mask_index, bit_index;
 	MP_INVARIANT(allocator->linked != 0);
 	MP_INVARIANT(allocator->free_count != 0);
 	for (mask_index = 0; mask_index != MP_BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
-	{
-		MP_UNLIKELY_IF(allocator->free_map[mask_index] == 0)
-			continue;
-		bit_index = MP_CTZ(allocator->free_map[mask_index]);
-		MP_BR(allocator->free_map[mask_index], bit_index);
-		r = allocator->buffer + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) << allocator->block_size_log2);
-		--allocator->free_count;
-		MP_UNLIKELY_IF(allocator->free_count == 0)
-			allocator->free_count += mp_block_allocator_reclaim(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
-		return r;
-	}
-	MP_UNREACHABLE;
+		MP_UNLIKELY_IF(allocator->free_map[mask_index] != 0)
+			break;
+	MP_INVARIANT(mask_index != MP_BLOCK_ALLOCATOR_MASK_COUNT);
+	bit_index = MP_CTZ(allocator->free_map[mask_index]);
+	MP_INVARIANT(MP_BT(allocator->free_map[mask_index], bit_index));
+	MP_BR(allocator->free_map[mask_index], bit_index);
+	--allocator->free_count;
+	MP_UNLIKELY_IF(allocator->free_count == 0)
+		allocator->free_count += mp_block_allocator_reclaim(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+	return allocator->buffer + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) << allocator->block_size_log2);
 }
 
 MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_allocator_intrusive* allocator)
 {
-	void* r;
 	uint_fast32_t mask_index, bit_index;
 	MP_INVARIANT(allocator->linked != 0);
 	MP_INVARIANT(allocator->free_count != 0);
 	for (mask_index = 0; mask_index != MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT; ++mask_index)
-	{
-		MP_UNLIKELY_IF(allocator->free_map[mask_index] == 0)
-			continue;
-		bit_index = MP_CTZ(allocator->free_map[mask_index]);
-		MP_BR(allocator->free_map[mask_index], bit_index);
-		r = (uint8_t*)allocator + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) * allocator->block_size);
-		--allocator->free_count;
-		MP_UNLIKELY_IF(allocator->free_count == 0)
-			allocator->free_count += mp_block_allocator_reclaim(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
-		return r;
-	}
-	MP_UNREACHABLE;
+		MP_UNLIKELY_IF(allocator->free_map[mask_index] != 0)
+			break;
+	MP_INVARIANT(mask_index != MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
+	bit_index = MP_CTZ(allocator->free_map[mask_index]);
+	MP_INVARIANT(MP_BT(allocator->free_map[mask_index], bit_index));
+	MP_BR(allocator->free_map[mask_index], bit_index);
+	--allocator->free_count;
+	MP_UNLIKELY_IF(allocator->free_count == 0)
+		allocator->free_count += mp_block_allocator_reclaim(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
+	return (uint8_t*)allocator + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) * allocator->block_size);
 }
 
 typedef void (*mp_fn_block_allocator_recover)(void* bin, void* allocator, mp_atomic_bool* linked);
@@ -1395,7 +1432,7 @@ MP_INLINE_NEVER static void mp_block_allocator_recover(mp_flist_node** bin, mp_b
 		allocator->free_count += mp_block_allocator_reclaim_lazy(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 }
 
-MP_INLINE_NEVER static void mp_block_allocator_recover(mp_flist_node** bin, mp_block_allocator_intrusive* allocator)
+MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover(mp_flist_node** bin, mp_block_allocator_intrusive* allocator)
 {
 	mp_flist_node* desired;
 	desired = (mp_flist_node*)allocator;
@@ -1447,7 +1484,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_free(mp_block_allocato
 	bit_index = index & MP_PTR_BITS_MASK;
 	MP_BS(allocator->free_map[mask_index], bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked) && MP_ATOMIC_TAS_ACQ(&allocator->linked))
-		mp_block_allocator_recover((mp_flist_node**)(allocator->owner->bins + allocator->size_class), allocator);
+		mp_block_allocator_intrusive_recover((mp_flist_node**)(allocator->owner->bins + allocator->size_class), allocator);
 }
 
 MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_free_shared(mp_block_allocator_intrusive* allocator, void* ptr)
@@ -1805,13 +1842,15 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 #ifdef MP_TARGET_WINDOWS
 	SYSTEM_INFO info;
 	GetSystemInfo(&info);
+	max_address = info.lpMaximumApplicationAddress;
+	min_address = (void*)MP_ALIGN_CEIL_BASE((size_t)info.lpMinimumApplicationAddress, chunk_size - 1);
 	page_size = info.dwPageSize;
 	chunk_size = page_size * MP_CACHE_LINE_SIZE * 8;
-	max_address = info.lpMaximumApplicationAddress;
-	min_chunk = (void*)MP_ALIGN_CEIL_BASE((size_t)info.lpMinimumApplicationAddress, chunk_size - 1);
+	large_page_size = GetLargePageMinimum();
 #else
 	page_size = (size_t)getpagesize();
 	chunk_size = page_size * MP_CACHE_LINE_SIZE * 8;
+	large_page_size = gethugepagesize();
 #endif
 	chunk_size_mask = chunk_size - 1;
 	page_size_log2 = MP_FLOOR_LOG2(page_size);
@@ -1827,7 +1866,7 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 		n += MP_SIZE_MAP_SIZES[i];
 	}
 	for (i = 0; i != MP_SIZE_CLASS_COUNT; ++i)
-		MP_SIZE_MAP_RESERVED_COUNTS[i] = sizeof(mp_block_allocator_intrusive) + ((size_t)MP_SIZE_CLASSES[i] - 1) / MP_SIZE_CLASSES[i];
+		MP_SIZE_MAP_RESERVED_COUNTS[i] = (sizeof(mp_block_allocator_intrusive) + ((size_t)MP_SIZE_CLASSES[i] - 1)) / MP_SIZE_CLASSES[i];
 #ifndef MP_NO_CUSTOM_BACKEND
 	MP_UNLIKELY_IF(options->backend != NULL)
 	{
@@ -1845,7 +1884,7 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	backend_init();
 #else
 	MP_INVARIANT(options->backend == NULL);
-	mp_os_init();
+	mp_os_init((options->flags & MP_INIT_ENABLE_LARGE_PAGES) != 0);
 #endif
 	mp_lcache_init();
 #ifdef MP_32BIT
@@ -1858,7 +1897,7 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 MP_ATTR void MP_CALL mp_init_default()
 {
 	mp_init_options opt;
-	opt.backend = NULL;
+	(void)memset(&opt, 0, sizeof(mp_init_options));
 	mp_init(&opt);
 }
 
@@ -2147,6 +2186,31 @@ MP_ATTR void MP_CALL mp_debug_init(const mp_debug_options* options)
 	(void)memcpy(&debugger, options, sizeof(mp_debug_options));
 	mp_debug_enabled_flag = MP_TRUE;
 #endif
+}
+
+MP_ATTR size_t MP_CALL mp_cache_line_size()
+{
+	return MP_CACHE_LINE_SIZE;
+}
+
+MP_ATTR size_t MP_CALL mp_page_size()
+{
+	return page_size;
+}
+
+MP_ATTR size_t MP_CALL mp_large_page_size()
+{
+	return large_page_size;
+}
+
+MP_ATTR void* MP_CALL mp_lowest_address()
+{
+	return min_address;
+}
+
+MP_ATTR void* MP_CALL mp_highest_address()
+{
+	return max_address;
 }
 
 MP_ATTR void MP_CALL mp_debug_init_default()
