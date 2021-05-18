@@ -17,6 +17,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __linux__
+#define MP_TARGET_LINUX
+#elif defined(_WIN32)
+#define MP_TARGET_WINDOWS
+#else
+#error "MPMALLOC: UNSUPPORTED TARGET OPERATING SYSTEM"
+#endif
+
 #if !defined(MP_DEBUG) && (defined(_DEBUG) || !defined(NDEBUG))
 #define MP_DEBUG
 #endif
@@ -103,7 +111,7 @@ typedef enum mp_flush_type
 	MP_FLUSH_EXPONENTIAL,
 } mp_flush_type;
 
-typedef void(MP_PTR* mp_fn_init)();
+typedef void(MP_PTR* mp_fn_init)(const struct mp_init_options*);
 typedef void(MP_PTR* mp_fn_cleanup)();
 typedef void*(MP_PTR* mp_fn_malloc)(size_t size);
 typedef mp_bool(MP_PTR* mp_fn_resize)(void* ptr, size_t old_size, size_t new_size);
@@ -310,14 +318,12 @@ namespace mp
 #define MP_ALIGN_FLOOR(VALUE, ALIGNMENT) MP_ALIGN_FLOOR_BASE(VALUE, (ALIGNMENT) - 1)
 #define MP_ALIGN_CEIL(VALUE, ALIGNMENT) MP_ALIGN_CEIL_BASE(VALUE, (ALIGNMENT) - 1)
 
-#ifdef __linux__
-#define MP_TARGET_LINUX
+#ifdef MP_TARGET_LINUX
 #include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
 #include <hugetlbfs.h>
-#elif defined(_WIN32)
-#define MP_TARGET_WINDOWS
+#elif defined(MP_TARGET_WINDOWS)
 #include <Windows.h>
 #include <ntsecapi.h>
 #else
@@ -606,9 +612,9 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 //	MISCELLANEOUS
 // ================================================================
 
-#define MP_ZERO_COLD_16(PTR) _mm_stream_si128((__m128i*)PTR, _mm_setzero_si128())
-#define MP_ZERO_COLD_32(PTR) _mm256_stream_si256((__m256i*)PTR, _mm256_setzero_si256())
-#define MP_ZERO_COLD_64(PTR) _mm512_stream_si512((__m512i*)PTR, _mm512_setzero_si512())
+#define MP_ZERO_COLD_16(PTR) _mm_stream_si128((__m128i*)(PTR), _mm_setzero_si128())
+#define MP_ZERO_COLD_32(PTR) _mm256_stream_si256((__m256i*)(PTR), _mm256_setzero_si256())
+#define MP_ZERO_COLD_64(PTR) _mm512_stream_si512((__m512i*)(PTR), _mm512_setzero_si512())
 
 MP_INLINE_ALWAYS static void mp_zero_fill_block_allocator_marked_map(void* ptr)
 {
@@ -836,7 +842,7 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast16_t mp_reserved_count_of(uint_fas
 	return (sizeof(mp_block_allocator_intrusive) + ((size_t)MP_SIZE_CLASSES[sc] - 1)) / MP_SIZE_CLASSES[sc];
 }
 
-MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_get_small_sc(size_t size)
+MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_get_sc(size_t size)
 {
 	uint_fast8_t log2, i;
 	log2 = MP_FLOOR_LOG2(size);
@@ -847,11 +853,6 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_get_small_sc(size_t size)
 				return MP_SIZE_MAP_OFFSETS[log2] + i;
 	}
 	return MP_CEIL_LOG2(size) - MP_SIZE_MAP_MAX_LOG2;
-}
-
-MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast32_t mp_get_large_sc(size_t size)
-{
-	return MP_CEIL_LOG2(size) - page_size_log2;
 }
 
 // ================================================================
@@ -891,14 +892,16 @@ MP_INLINE_ALWAYS static void mp_init_redzone(void* buffer, size_t size)
 #ifdef MP_TARGET_WINDOWS
 typedef PVOID(WINAPI* VirtualAlloc2_t)(HANDLE Process, PVOID BaseAddress, SIZE_T Size, ULONG AllocationType, ULONG PageProtection, MEM_EXTENDED_PARAMETER* ExtendedParameters, ULONG ParameterCount);
 
-static HANDLE process_handle;
-static VirtualAlloc2_t virtualalloc2;
+#define MP_WINDOWS_CURRENT_PROCESS_HANDLE ((HANDLE)-1)
+static VirtualAlloc2_t va2_ptr;
 static ULONG va2_flags;
 static MEM_ADDRESS_REQUIREMENTS va2_addr_req;
 static MEM_EXTENDED_PARAMETER va2_ext_param;
 
-MP_INLINE_ALWAYS static void mp_os_init(mp_bool enable_large_pages)
+MP_INLINE_ALWAYS static void mp_os_init(const mp_init_options* options)
 {
+	static const char errmsg[] = "Failed to acquire the SE_LOCK_MEMORY_NAME privilege, which is required to use large pages in MPMalloc.";
+	HMODULE m;
 	HANDLE h;
 	DWORD n;
 	TOKEN_USER users[64];
@@ -906,51 +909,49 @@ MP_INLINE_ALWAYS static void mp_os_init(mp_bool enable_large_pages)
 	LSA_OBJECT_ATTRIBUTES attrs;
 	LSA_UNICODE_STRING rights;
 	TOKEN_PRIVILEGES p;
-	process_handle = GetCurrentProcess();
-	virtualalloc2 = (VirtualAlloc2_t)GetProcAddress(GetModuleHandle(TEXT("KernelBase.DLL")), "VirtualAlloc2");
-	MP_INVARIANT(virtualalloc2 != NULL);
+	m = GetModuleHandle(TEXT("KernelBase.DLL"));
+	MP_INVARIANT(m != NULL);
+	va2_ptr = (VirtualAlloc2_t)GetProcAddress(m, "VirtualAlloc2");
+	MP_INVARIANT(va2_ptr != NULL);
 	va2_addr_req.Alignment = chunk_size;
 	va2_addr_req.HighestEndingAddress = max_address;
 	va2_addr_req.LowestStartingAddress = min_address;
 	va2_ext_param.Type = MemExtendedParameterAddressRequirements;
 	va2_ext_param.Pointer = &va2_addr_req;
 	va2_flags = MEM_RESERVE | MEM_COMMIT;
-	if (!enable_large_pages)
+	if (!(options->flags & MP_INIT_ENABLE_LARGE_PAGES))
 		return;
 	h = NULL;
-	MP_UNLIKELY_IF(!OpenProcessToken(process_handle, TOKEN_QUERY, &h))
-		goto Error;
+	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY, &h))
+		return MP_EMMIT_ERROR(errmsg);
 	n = sizeof(users);
 	MP_UNLIKELY_IF(!GetTokenInformation(h, TokenUser, users, n, &n))
-		goto Error;
+		return MP_EMMIT_ERROR(errmsg);
 	CloseHandle(h);
 	(void)memset(&attrs, 0, sizeof(attrs));
 	MP_UNLIKELY_IF(!LsaOpenPolicy(NULL, &attrs, POLICY_CREATE_ACCOUNT | POLICY_LOOKUP_NAMES, &policy))
-		goto Error;
+		return MP_EMMIT_ERROR(errmsg);
 	rights.Buffer = (PWSTR)SE_LOCK_MEMORY_NAME;
 	rights.Length = (USHORT)(wcslen(rights.Buffer) * sizeof(WCHAR));
 	rights.MaximumLength = rights.Length + (USHORT)sizeof(WCHAR);
 	MP_UNLIKELY_IF(!LsaAddAccountRights(policy, users->User.Sid, &rights, 1))
-		goto Error;
+		return MP_EMMIT_ERROR(errmsg);
 	h = NULL;
-	MP_UNLIKELY_IF(!OpenProcessToken(process_handle, TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &h))
-		goto Error;
+	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &h))
+		return MP_EMMIT_ERROR(errmsg);
 	p.PrivilegeCount = 1;
 	p.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 	MP_UNLIKELY_IF(!LookupPrivilegeValue(NULL, SE_LOCK_MEMORY_NAME, &p.Privileges[0].Luid))
-		goto Error;
+		return MP_EMMIT_ERROR(errmsg);
 	MP_UNLIKELY_IF(!AdjustTokenPrivileges(h, FALSE, &p, 0, NULL, 0))
-		goto Error;
+		return MP_EMMIT_ERROR(errmsg);
 	va2_flags |= MEM_LARGE_PAGES;
 	CloseHandle(h);
-	return;
-Error:
-	abort();
 }
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
 {
-	return virtualalloc2(process_handle, NULL, size, va2_flags, PAGE_READWRITE, &va2_ext_param, 1);
+	return va2_ptr(MP_WINDOWS_CURRENT_PROCESS_HANDLE, NULL, size, va2_flags, PAGE_READWRITE, &va2_ext_param, 1);
 }
 
 MP_INLINE_ALWAYS static mp_bool mp_os_resize(void* ptr, size_t old_size, size_t new_size) { return MP_FALSE; }
@@ -1248,6 +1249,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocato
 	mp_zero_fill_block_allocator_intrusive_marked_map((void*)allocator->marked_map);
 	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
 	reserved_count = MP_SIZE_MAP_RESERVED_COUNTS[sc];
+	MP_INVARIANT(reserved_count != 0);
 	MP_INVARIANT(reserved_count == mp_reserved_count_of(sc));
 	MP_PREFETCH((uint8_t*)allocator + (size_t)reserved_count * MP_SIZE_CLASSES[allocator->size_class]);
 	allocator->next = NULL;
@@ -1264,15 +1266,11 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocato
 	allocator->free_map[mask_count] &= ~(((size_t)1 << bit_count) - (size_t)1);
 }
 
-MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_chunk_size_of_small(size_t size)
+MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_chunk_size_of(size_t size)
 {
 	MP_INVARIANT(size != 0);
-	return MP_CEIL_POW2(size * MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY);
-}
-
-MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_chunk_size_of_large(size_t size)
-{
-	MP_INVARIANT(size != 0);
+	MP_UNLIKELY_IF(size <= page_size)
+		return MP_CEIL_POW2(size * MP_BLOCK_ALLOCATOR_MAX_CAPACITY);
 	size *= MP_BLOCK_ALLOCATOR_MAX_CAPACITY;
 	MP_UNLIKELY_IF(size >= chunk_size)
 		return chunk_size;
@@ -1314,7 +1312,7 @@ MP_INLINE_ALWAYS static mp_bool mp_block_allocator_owns(mp_block_allocator* allo
 	MP_INVARIANT(mp_is_valid_block_allocator(allocator));
 	MP_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)allocator->buffer)
 		return MP_FALSE;
-	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator->buffer + mp_chunk_size_of_large((size_t)1 << (allocator->size_class + page_size_log2)))
+	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator->buffer + mp_chunk_size_of((size_t)1 << (allocator->size_class + page_size_log2)))
 		return MP_FALSE;
 	index = mp_block_allocator_index_of(allocator, ptr);
 	mask_index = index >> MP_PTR_BITS_LOG2;
@@ -1328,7 +1326,7 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_block_allocator_intrusive_owns(mp_blo
 	MP_INVARIANT(mp_is_valid_block_allocator_intrusive(allocator));
 	MP_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)allocator)
 		return MP_FALSE;
-	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator + mp_chunk_size_of_small(MP_SIZE_CLASSES[allocator->size_class]))
+	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator + mp_chunk_size_of(MP_SIZE_CLASSES[allocator->size_class]))
 		return MP_FALSE;
 	index = mp_block_allocator_intrusive_index_of(allocator, ptr);
 	mask_index = index >> MP_PTR_BITS_LOG2;
@@ -1415,7 +1413,7 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover(mp_flist_node**
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - MP_SIZE_MAP_RESERVED_COUNTS[allocator->size_class])
-		return mp_free(allocator, mp_chunk_size_of_small(MP_SIZE_CLASSES[allocator->size_class]));
+		return mp_free(allocator, mp_chunk_size_of(MP_SIZE_CLASSES[allocator->size_class]));
 	desired = (mp_flist_node*)allocator;
 	desired->next = *bin;
 	*bin = desired;
@@ -1447,7 +1445,7 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover_shared(mp_rlist
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - MP_SIZE_MAP_RESERVED_COUNTS[allocator->size_class])
-		return mp_free(allocator, mp_chunk_size_of_small(MP_SIZE_CLASSES[allocator->size_class]));
+		return mp_free(allocator, mp_chunk_size_of(MP_SIZE_CLASSES[allocator->size_class]));
 	desired = (mp_flist_node*)allocator;
 	MP_SPIN_LOOP
 	{
@@ -1716,7 +1714,7 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size
 	mp_block_allocator_intrusive** bin;
 	bin = tcache->bins + sc;
 	MP_INVARIANT(this_tcache != NULL);
-	k = mp_chunk_size_of_small(size);
+	k = mp_chunk_size_of(size);
 	allocator = (mp_block_allocator_intrusive*)mp_malloc(k);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
@@ -1754,7 +1752,7 @@ static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fa
 	mp_block_allocator_intrusive** bin;
 	mp_block_allocator_intrusive* allocator;
 	uint_fast8_t sc;
-	sc = mp_get_small_sc(size);
+	sc = mp_get_sc(size);
 	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
 	bin = tcache->bins + sc;
 	MP_UNLIKELY_IF(*bin == NULL && MP_ATOMIC_LOAD_ACQ_PTR(tcache->recovered + sc) != NULL)
@@ -1778,7 +1776,7 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 	mp_block_allocator** bin;
 	mp_block_allocator* allocator;
 	uint_fast8_t sc;
-	sc = mp_get_large_sc(size);
+	sc = mp_get_sc(size);
 	MP_INVARIANT(sc < chunk_size_log2 - page_size_log2);
 	MP_INVARIANT(size == ((size_t)1 << (sc + page_size_log2)));
 	bin = tcache->bins_large + sc;
@@ -1862,10 +1860,10 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 		backend_free = options->backend->free;
 		backend_purge = options->backend->purge;
 	}
-	backend_init();
+	backend_init(options);
 #else
 	MP_INVARIANT(options->backend == NULL);
-	mp_os_init((options->flags & MP_INIT_ENABLE_LARGE_PAGES) != 0);
+	mp_os_init(options);
 #endif
 	mp_lcache_init();
 #ifdef MP_32BIT
@@ -1993,8 +1991,8 @@ MP_ATTR void* MP_CALL mp_tcache_malloc(size_t size, mp_flags flags)
 		r = mp_tcache_malloc_small_fast(this_tcache, k, flags);
 	else
 		r = mp_tcache_malloc_large_fast(this_tcache, k, flags);
-	mp_this_tcache_check_integrity();
 	MP_DEBUG_JUNK_FILL(r, size);
+	mp_this_tcache_check_integrity();
 	return r;
 }
 
@@ -2012,7 +2010,7 @@ MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
 	size = mp_round_size(size);
 	MP_LIKELY_IF(size <= page_size)
 	{
-		k = mp_chunk_size_of_small(size);
+		k = mp_chunk_size_of(size);
 		intrusive_allocator = mp_tcache_block_allocator_intrusive_allocator_of(ptr, k);
 		MP_INVARIANT(intrusive_allocator != NULL);
 		MP_LIKELY_IF(intrusive_allocator->owner == this_tcache)
@@ -2247,7 +2245,7 @@ MP_ATTR mp_bool MP_CALL mp_debug_validate_memory(const void* ptr, size_t size)
 		return MP_TRUE;
 	if (size < page_size)
 	{
-		allocator_intrusive = mp_tcache_block_allocator_intrusive_allocator_of(ptr, mp_chunk_size_of_small(size));
+		allocator_intrusive = mp_tcache_block_allocator_intrusive_allocator_of(ptr, mp_chunk_size_of(size));
 		return mp_is_valid_block_allocator_intrusive(allocator_intrusive);
 	}
 	else
