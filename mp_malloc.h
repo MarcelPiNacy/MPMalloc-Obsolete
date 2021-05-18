@@ -718,7 +718,6 @@ typedef struct mp_block_allocator
 	struct mp_tcache* owner;
 	uint8_t* buffer;
 	uint32_t free_count;
-	uint8_t block_size_log2;
 	uint8_t size_class;
 	mp_atomic_bool linked;
 	size_t free_map[MP_BLOCK_ALLOCATOR_MASK_COUNT];
@@ -730,7 +729,6 @@ typedef struct mp_block_allocator_intrusive
 	MP_SHARED_ATTR struct mp_block_allocator_intrusive* next;
 	struct mp_tcache* owner;
 	uint32_t free_count;
-	uint32_t block_size;
 	uint8_t size_class;
 	mp_atomic_bool linked;
 	MP_SHARED_ATTR size_t free_map[MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT];
@@ -1231,18 +1229,60 @@ MP_INLINE_ALWAYS static void mp_tcache_release(mp_tcache* tcache)
 //	BLOCK ALLOCATOR
 // ================================================================
 
+MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocator, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner, void* buffer)
+{
+	uint_fast32_t mask_count, bit_count;
+	mp_zero_fill_block_allocator_marked_map((void*)allocator->marked_map);
+	MP_PREFETCH(buffer);
+	MP_INVARIANT(allocator != NULL);
+	MP_INVARIANT(buffer != NULL);
+	allocator->next = NULL;
+	allocator->free_count = 1U << (chunk_size_log2 - (sc + page_size_log2));
+	allocator->size_class = sc;
+	allocator->owner = owner;
+	allocator->buffer = (uint8_t*)buffer;
+	MP_NON_ATOMIC_SET(allocator->linked);
+	(void)memset(allocator->free_map, 0, MP_CACHE_LINE_SIZE / 2);
+	mask_count = allocator->free_count >> MP_PTR_BITS_LOG2;
+	bit_count = allocator->free_count & MP_PTR_BITS_MASK;
+	(void)memset(allocator->free_map, 0xff, (size_t)mask_count * MP_PTR_SIZE);
+	allocator->free_map[mask_count] |= ((size_t)1 << bit_count) - (size_t)1;
+}
+
+MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocator_intrusive* allocator, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner)
+{
+	uint_fast32_t mask_count, bit_count, reserved_count;
+	MP_INVARIANT(allocator != NULL);
+	mp_zero_fill_block_allocator_intrusive_marked_map((void*)allocator->marked_map);
+	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
+	reserved_count = MP_SIZE_MAP_RESERVED_COUNTS[sc];
+	MP_INVARIANT(reserved_count == mp_reserved_count_of(sc));
+	MP_PREFETCH((uint8_t*)allocator + (size_t)reserved_count * MP_SIZE_CLASSES[allocator->size_class]);
+	allocator->next = NULL;
+	MP_INVARIANT(reserved_count >= 1);
+	allocator->free_count = MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - reserved_count;
+	MP_INVARIANT(reserved_count < allocator->free_count);
+	allocator->size_class = sc;
+	allocator->owner = owner;
+	MP_NON_ATOMIC_SET(allocator->linked);
+	(void)memset(allocator->free_map, 0xff, MP_CACHE_LINE_SIZE);
+	mask_count = reserved_count >> MP_PTR_BITS_LOG2;
+	bit_count = reserved_count & MP_PTR_BITS_MASK;
+	(void)memset(allocator->free_map, 0, mask_count);
+	allocator->free_map[mask_count] &= ~(((size_t)1 << bit_count) - (size_t)1);
+}
+
 MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_chunk_size_of_small(size_t size)
 {
 	MP_INVARIANT(size != 0);
-	size *= MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY;
-	return MP_CEIL_POW2(size);
+	return MP_CEIL_POW2(size * MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY);
 }
 
 MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_chunk_size_of_large(size_t size)
 {
 	MP_INVARIANT(size != 0);
 	size *= MP_BLOCK_ALLOCATOR_MAX_CAPACITY;
-	MP_UNLIKELY_IF(size > chunk_size)
+	MP_UNLIKELY_IF(size >= chunk_size)
 		return chunk_size;
 	return MP_CEIL_POW2(size);
 }
@@ -1252,7 +1292,7 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_is_valid_block_allocator(mp_block_all
 	return
 		allocator->owner != NULL && allocator->buffer != NULL &&
 		allocator->free_count <= MP_BLOCK_ALLOCATOR_MAX_CAPACITY &&
-		allocator->block_size_log2 != 0 && allocator->size_class < (chunk_size_log2 - page_size_log2) &&
+		(allocator->size_class + page_size_log2) != 0 && allocator->size_class < (chunk_size_log2 - page_size_log2) &&
 		(uint8_t)allocator->linked < 2;
 }
 
@@ -1260,20 +1300,20 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_is_valid_block_allocator_intrusive(mp
 {
 	return
 		allocator->owner != NULL && allocator->free_count < MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY &&
-		allocator->block_size != 0 && allocator->size_class < MP_SIZE_CLASS_COUNT &&
+		MP_SIZE_CLASSES[allocator->size_class] != 0 && allocator->size_class < MP_SIZE_CLASS_COUNT &&
 		(uint8_t)allocator->linked < 2;
 }
 
 MP_PURE MP_INLINE_ALWAYS static uint_fast32_t mp_block_allocator_index_of(mp_block_allocator* allocator, void* ptr)
 {
 	MP_INVARIANT(mp_is_valid_block_allocator(allocator));
-	return (uint_fast32_t)(((size_t)((uint8_t*)ptr - (uint8_t*)allocator->buffer)) >> allocator->block_size_log2);
+	return (uint_fast32_t)(((size_t)((uint8_t*)ptr - (uint8_t*)allocator->buffer)) >> (allocator->size_class + page_size_log2));
 }
 
 MP_PURE MP_INLINE_ALWAYS static uint_fast32_t mp_block_allocator_intrusive_index_of(mp_block_allocator_intrusive* allocator, void* ptr)
 {
 	MP_INVARIANT(mp_is_valid_block_allocator_intrusive(allocator));
-	return (uint_fast32_t)(((size_t)((uint8_t*)ptr - (uint8_t*)allocator)) / allocator->block_size);
+	return (uint_fast32_t)(((size_t)((uint8_t*)ptr - (uint8_t*)allocator)) / MP_SIZE_CLASSES[allocator->size_class]);
 }
 
 MP_INLINE_ALWAYS static mp_bool mp_block_allocator_owns(mp_block_allocator* allocator, void* ptr)
@@ -1282,7 +1322,7 @@ MP_INLINE_ALWAYS static mp_bool mp_block_allocator_owns(mp_block_allocator* allo
 	MP_INVARIANT(mp_is_valid_block_allocator(allocator));
 	MP_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)allocator->buffer)
 		return MP_FALSE;
-	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator->buffer + mp_chunk_size_of_large((size_t)1 << allocator->block_size_log2))
+	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator->buffer + mp_chunk_size_of_large((size_t)1 << (allocator->size_class + page_size_log2)))
 		return MP_FALSE;
 	index = mp_block_allocator_index_of(allocator, ptr);
 	mask_index = index >> MP_PTR_BITS_LOG2;
@@ -1296,58 +1336,12 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_block_allocator_intrusive_owns(mp_blo
 	MP_INVARIANT(mp_is_valid_block_allocator_intrusive(allocator));
 	MP_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)allocator)
 		return MP_FALSE;
-	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator + mp_chunk_size_of_small(allocator->block_size))
+	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator + mp_chunk_size_of_small(MP_SIZE_CLASSES[allocator->size_class]))
 		return MP_FALSE;
 	index = mp_block_allocator_intrusive_index_of(allocator, ptr);
 	mask_index = index >> MP_PTR_BITS_LOG2;
 	bit_index = index & MP_PTR_BITS_MASK;
 	return !MP_BT(allocator->free_map[mask_index], bit_index);
-}
-
-MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocator, uint_fast8_t block_size_log2, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner, void* buffer)
-{
-	uint_fast32_t mask_count, bit_count;
-	mp_zero_fill_block_allocator_marked_map((void*)allocator->marked_map);
-	MP_PREFETCH(buffer);
-	MP_INVARIANT(chunk_size_log2 > block_size_log2);
-	MP_INVARIANT(allocator != NULL);
-	MP_INVARIANT(buffer != NULL);
-	allocator->next = NULL;
-	allocator->free_count = 1U << (chunk_size_log2 - block_size_log2);
-	allocator->block_size_log2 = block_size_log2;
-	allocator->size_class = sc;
-	allocator->owner = owner;
-	allocator->buffer = (uint8_t*)buffer;
-	MP_NON_ATOMIC_SET(allocator->linked);
-	(void)memset(allocator->free_map, 0, MP_CACHE_LINE_SIZE / 2);
-	mask_count = allocator->free_count >> MP_PTR_BITS_LOG2;
-	bit_count = allocator->free_count & MP_PTR_BITS_MASK;
-	(void)memset(allocator->free_map, 0xff, (size_t)mask_count * MP_PTR_SIZE);
-	allocator->free_map[mask_count] |= ((size_t)1 << bit_count) - (size_t)1;
-}
-
-MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocator_intrusive* allocator, uint_fast32_t block_size, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner)
-{
-	uint_fast32_t mask_count, bit_count, reserved_count;
-	MP_INVARIANT(allocator != NULL);
-	mp_zero_fill_block_allocator_intrusive_marked_map((void*)allocator->marked_map);
-	MP_INVARIANT(sc < MP_SIZE_CLASS_COUNT);
-	reserved_count = MP_SIZE_MAP_RESERVED_COUNTS[sc];
-	MP_INVARIANT(reserved_count == mp_reserved_count_of(sc));
-	MP_PREFETCH((uint8_t*)allocator + (size_t)reserved_count * block_size);
-	allocator->next = NULL;
-	MP_INVARIANT(reserved_count >= 1);
-	allocator->free_count = MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - reserved_count;
-	MP_INVARIANT(reserved_count < allocator->free_count);
-	allocator->block_size = block_size;
-	allocator->size_class = sc;
-	allocator->owner = owner;
-	MP_NON_ATOMIC_SET(allocator->linked);
-	(void)memset(allocator->free_map, 0xff, MP_CACHE_LINE_SIZE);
-	mask_count = reserved_count >> MP_PTR_BITS_LOG2;
-	bit_count = reserved_count & MP_PTR_BITS_MASK;
-	(void)memset(allocator->free_map, 0, mask_count);
-	allocator->free_map[mask_count] &= ~(((size_t)1 << bit_count) - (size_t)1);
 }
 
 MP_INLINE_ALWAYS static uint_fast32_t mp_block_allocator_reclaim_inline(size_t* free_map, mp_atomic_size_t* marked_map, uint_fast32_t bitmask_count)
@@ -1386,7 +1380,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allo
 	--allocator->free_count;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
-	return allocator->buffer + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) << allocator->block_size_log2);
+	return allocator->buffer + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) << (allocator->size_class + page_size_log2));
 }
 
 MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_allocator_intrusive* allocator)
@@ -1404,7 +1398,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_alloc
 	--allocator->free_count;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
-	return (uint8_t*)allocator + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) * allocator->block_size);
+	return (uint8_t*)allocator + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) * MP_SIZE_CLASSES[allocator->size_class]);
 }
 
 typedef void (*mp_fn_block_allocator_recover)(void* bin, void* allocator, mp_atomic_bool* linked);
@@ -1429,7 +1423,7 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover(mp_flist_node**
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - MP_SIZE_MAP_RESERVED_COUNTS[allocator->size_class])
-		return mp_free(allocator, mp_chunk_size_of_small(allocator->block_size));
+		return mp_free(allocator, mp_chunk_size_of_small(MP_SIZE_CLASSES[allocator->size_class]));
 	desired = (mp_flist_node*)allocator;
 	desired->next = *bin;
 	*bin = desired;
@@ -1461,7 +1455,7 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover_shared(mp_rlist
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - MP_SIZE_MAP_RESERVED_COUNTS[allocator->size_class])
-		return mp_free(allocator, mp_chunk_size_of_small(allocator->block_size));
+		return mp_free(allocator, mp_chunk_size_of_small(MP_SIZE_CLASSES[allocator->size_class]));
 	desired = (mp_flist_node*)allocator;
 	MP_SPIN_LOOP
 	{
@@ -1734,7 +1728,7 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size
 	allocator = (mp_block_allocator_intrusive*)mp_malloc(k);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mp_block_allocator_intrusive_init(allocator, (uint_fast32_t)size, sc, k, this_tcache);
+	mp_block_allocator_intrusive_init(allocator, (uint_fast32_t)size, sc, this_tcache);
 	r = mp_block_allocator_intrusive_malloc(allocator);
 	allocator->next = *bin;
 	*bin = allocator;
@@ -1745,18 +1739,16 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size
 {
 	void* r;
 	void* buffer;
-	size_t k;
 	mp_block_allocator* allocator;
 	mp_block_allocator** bin;
 	MP_INVARIANT(this_tcache != NULL);
-	k = mp_chunk_size_of_large(size);
 	buffer = mp_lcache_malloc(chunk_size, MP_ENABLE_FALLBACK);
 	MP_UNLIKELY_IF(buffer == NULL)
 		return NULL;
 	allocator = mp_tcache_insert_allocator(buffer);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mp_block_allocator_init(allocator, MP_FLOOR_LOG2(size), sc, k, this_tcache, buffer);
+	mp_block_allocator_init(allocator, MP_FLOOR_LOG2(size), sc, this_tcache, buffer);
 	r = mp_block_allocator_malloc(allocator);
 	bin = tcache->bins_large + sc;
 	allocator->next = *bin;
