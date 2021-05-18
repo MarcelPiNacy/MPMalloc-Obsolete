@@ -11,24 +11,10 @@ MPMalloc has been tested on Windows 10. It *should* work on Linux.
 ## Overview
 
 MPMalloc is a high-performance memory allocator written in C for Windows and Linux systems.  
-The main goals of this project are:
--	Eliminate synchronization events and minimize contention.
--	Experiment with highly cache aware data structures.
--	Avoid heap size blowup.
--	Improve on the classic malloc API.  
+<sub>**Note: MPMalloc is not a drop-in replacement for malloc since it doesn’t track the size of each allocated block. Size tracking will come as a macro option in the near-future.**</sub>  
 
-MPMalloc’s design is reminiscent of Google’s TCMalloc, in that the heap is structured using a hierarchy of caches. Each thread thus keeps a local allocator for small objects and delegates larger allocations to a central heap. MPMalloc’s large size threshold, internally called “chunk size”, is proportional to the system’s virtual page size and the processor’s cache line size. For x86/x64 systems with 4KiB-sized pages, this value happens to match 2MiB, which is usually also the large page size.  
-<sub>**Note: MPMalloc is not a drop-in replacement for malloc since it doesn’t track the size of each allocated block. A malloc-compatible variant will come as a separate library/macro option in the near-future.**</sub>
+MPMalloc’s design is reminiscent of TCMalloc, in that the heap is structured using a hierarchy of caches. Each thread thus keeps a local allocator for small objects and forwards large allocation requests to a shared structure. MPMalloc also takes inspiration from JEMalloc's chunks to arrive at a data structure creatively called the "block allocator", which is the main building block of the entire library. A block allocator is essentially a cache-aware bitmap allocator that supports serial allocation, serial deallocation _and_ concurrent deallocation. Due to how thread-local and thread-shared data are accessed, returning memory to a block allocator from a different thread is usually wait-free and, in some really rare cases, lock-free. Serial deallocation only needs to perform a single atomic RMW operation in some really rare cases (same likelyhood as the lock-free path in the concurrent version).
 
-## Thread Caches
-MPMalloc’s thread caches consists of one free-list per size-class. The twist is that each free-list doesn’t store individual objects, but instead chunk-aligned bitmap allocators, where the bitmap size matches the cache line size. In the rare case that one of the allocators runs out of free objects, the head of the free-list is discarded and “leaked”. On deallocation, the corresponding header can be found using pointer arithmetic and recovered. For cross-thread deallocations, like in a producer-consumer scenario, these allocators keep a separate atomic bitmap.
-Tiny allocations, objects smaller than the page size, use “intrusive block allocators”, which are bitmap allocators where the first few blocks are reserved for storing the necessary metadata. Small allocations instead associate the chunk address with the metadata using a regular array in 32-bit systems. For 64-bit systems a 3-level digital tree is used, where the first level is allocated statically.
-
-## Large Cache
-The large cache uses a more conventional approach: it consists of a global array/digital tree that maps size classes to free-lists.
-
-## Backend Allocator
-If MPMalloc runs out of memory, by default it will request more memory to the system (mmap/VirtualAlloc2). However, the user can also provide their own set of callbacks at startup.
 
 ## API
 
