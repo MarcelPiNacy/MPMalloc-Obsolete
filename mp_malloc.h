@@ -1229,7 +1229,7 @@ MP_INLINE_ALWAYS static void mp_tcache_release(mp_tcache* tcache)
 //	BLOCK ALLOCATOR
 // ================================================================
 
-MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocator, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner, void* buffer)
+MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocator, uint_fast8_t sc, struct mp_tcache* owner, void* buffer)
 {
 	uint_fast32_t mask_count, bit_count;
 	mp_zero_fill_block_allocator_marked_map((void*)allocator->marked_map);
@@ -1249,7 +1249,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocat
 	allocator->free_map[mask_count] |= ((size_t)1 << bit_count) - (size_t)1;
 }
 
-MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocator_intrusive* allocator, uint_fast8_t sc, size_t chunk_size, struct mp_tcache* owner)
+MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocator_intrusive* allocator, uint_fast8_t sc, struct mp_tcache* owner)
 {
 	uint_fast32_t mask_count, bit_count, reserved_count;
 	MP_INVARIANT(allocator != NULL);
@@ -1728,7 +1728,7 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size
 	allocator = (mp_block_allocator_intrusive*)mp_malloc(k);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mp_block_allocator_intrusive_init(allocator, (uint_fast32_t)size, sc, this_tcache);
+	mp_block_allocator_intrusive_init(allocator, sc, this_tcache);
 	r = mp_block_allocator_intrusive_malloc(allocator);
 	allocator->next = *bin;
 	*bin = allocator;
@@ -1748,7 +1748,7 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size
 	allocator = mp_tcache_insert_allocator(buffer);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
-	mp_block_allocator_init(allocator, MP_FLOOR_LOG2(size), sc, this_tcache, buffer);
+	mp_block_allocator_init(allocator, sc, this_tcache, buffer);
 	r = mp_block_allocator_malloc(allocator);
 	bin = tcache->bins_large + sc;
 	allocator->next = *bin;
