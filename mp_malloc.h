@@ -491,6 +491,7 @@ static_assert((MP_REDZONE_SIZE & ((UINTMAX_C(1) << MP_PTR_SIZE_LOG2) - UINTMAX_C
 
 #ifdef MP_CLANG_OR_GCC
 #define MP_ATOMIC(TYPE) TYPE volatile
+typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
 #define MP_ATOMIC_TEST_ACQ(WHERE)								__atomic_load_n((mp_atomic_bool*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_TAS_ACQ(WHERE)								__atomic_test_and_set((mp_atomic_bool*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_CLEAR_REL(WHERE)								__atomic_clear((mp_atomic_bool*)(WHERE), __ATOMIC_RELEASE)
@@ -517,6 +518,7 @@ static_assert((MP_REDZONE_SIZE & ((UINTMAX_C(1) << MP_PTR_SIZE_LOG2) - UINTMAX_C
 #elif defined(MP_MSVC)
 // I'd like to give special thanks to the visual studio dev team for being more than 10 years ahead of the competition in not adding support to the C11 standard to their compiler.
 #define MP_ATOMIC(TYPE) TYPE volatile
+typedef MP_ATOMIC(CHAR) mp_atomic_bool;
 #ifdef _M_ARM
 #define MP_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(NAME) MP_STRING_JOIN(NAME, _acq)
 #define MP_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(NAME) MP_STRING_JOIN(NAME, _rel)
@@ -553,10 +555,7 @@ typedef volatile mp_msvc_size_t mp_msvc_atomic_size_t;
 #define MP_ATOMIC_BIT_SET_REL(WHERE, VALUE) (void)MP_MSVC_ATOMIC_REL(_interlockedbittestandset)((mp_msvc_atomic_size_t*)(WHERE), (uint_fast8_t)(VALUE))
 #define MP_ATOMIC_ACQUIRE_FENCE MemoryBarrier()
 
-typedef struct mp_msvc_uintptr_pair
-{
-	MP_ALIGNAS(MP_DPTR_SIZE) size_t a, b;
-} mp_msvc_uintptr_pair;
+typedef struct mp_msvc_uintptr_pair { MP_ALIGNAS(MP_DPTR_SIZE) size_t a, b; } mp_msvc_uintptr_pair;
 
 MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_acq(volatile mp_msvc_uintptr_pair* where, const mp_msvc_uintptr_pair* expected, const mp_msvc_uintptr_pair* desired)
 {
@@ -687,7 +686,6 @@ MP_INLINE_ALWAYS static void mp_zero_fill_block_allocator_intrusive_marked_map(v
 //	MPMALLOC MAIN DATA TYPES
 // ================================================================
 
-typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
 typedef MP_ATOMIC(size_t) mp_atomic_size_t;
 typedef MP_ATOMIC(void*) mp_atomic_address;
 
@@ -794,18 +792,12 @@ static mp_bool mp_debug_enabled_flag;
 
 static MP_CONST uint16_t MP_SIZE_CLASSES[MP_SIZE_CLASS_COUNT] =
 {
-	1,
-	2,
-	4,
-	8, 12,
-	16, 20, 24, 28,
-	32, 40, 48, 56,
-	64, 80, 96, 112,
-	128, 144, 160, 176, 192, 208, 224, 240,
-	256, 272, 288, 304, 320, 352, 384, 416, 448, 480,
-	512, 544, 576, 640, 704, 768, 832, 896, 960,
-	1024, 1088, 1152, 1280, 1408, 1536, 1664, 1792, 1920,
-	2048, 2176, 2304, 2560, 2816, 3072, 3328, 3584, 3840
+	1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64,
+	80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256,
+	272, 288, 304, 320, 352, 384, 416, 448, 480, 512,
+	544, 576, 640, 704, 768, 832, 896, 960, 1024,
+	1088, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048,
+	2176, 2304, 2560, 2816, 3072, 3328, 3584, 3840
 };
 
 static MP_CONST uint16_t MP_SIZE_MAP_0[] = { 1 };
