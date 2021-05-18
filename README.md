@@ -18,7 +18,7 @@ The main goals of this project are:
 -	Improve on the classic malloc API.  
 
 MPMalloc’s design is reminiscent of Google’s TCMalloc, in that the heap is structured using a hierarchy of caches. Each thread thus keeps a local allocator for small objects and delegates larger allocations to a central heap. MPMalloc’s large size threshold, internally called “chunk size”, is proportional to the system’s virtual page size and the processor’s cache line size. For x86/x64 systems with 4KiB-sized pages, this value happens to match 2MiB, which is usually also the large page size.  
-<sub>**Note: MPMalloc is not a drop-in replacement for malloc since it doesn’t track the size of each allocated block. A malloc-compatible variant will come as a separate library in the near-future.**</sub>
+<sub>**Note: MPMalloc is not a drop-in replacement for malloc since it doesn’t track the size of each allocated block. A malloc-compatible variant will come as a separate library/macro option in the near-future.**</sub>
 
 ## Thread Caches
 MPMalloc’s thread caches consists of one free-list per size-class. The twist is that each free-list doesn’t store individual objects, but instead chunk-aligned bitmap allocators, where the bitmap size matches the cache line size. In the rare case that one of the allocators runs out of free objects, the head of the free-list is discarded and “leaked”. On deallocation, the corresponding header can be found using pointer arithmetic and recovered. For cross-thread deallocations, like in a producer-consumer scenario, these allocators keep a separate atomic bitmap.
