@@ -1350,19 +1350,6 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocato
 	allocator->free_map[mask_count] &= ~(((size_t)1 << bit_count) - (size_t)1);
 }
 
-MP_INLINE_ALWAYS static uint_fast32_t mp_block_allocator_reclaim_lazy(size_t* free_map, mp_atomic_size_t* marked_map, uint_fast32_t bitmask_count)
-{
-	size_t mask;
-	uint_fast32_t i;
-	for (i = 0; i != bitmask_count; ++i)
-		MP_UNLIKELY_IF(MP_ATOMIC_LOAD_ACQ_UPTR(marked_map + i) != 0)
-			break;
-	MP_INVARIANT(i != bitmask_count);
-	mask = MP_ATOMIC_XCHG_ACQ_UPTR(marked_map + i, 0);
-	free_map[i] |= mask;
-	return MP_POPCOUNT(mask);
-}
-
 MP_INLINE_ALWAYS static uint_fast32_t mp_block_allocator_reclaim_inline(size_t* free_map, mp_atomic_size_t* marked_map, uint_fast32_t bitmask_count)
 {
 	size_t mask;
@@ -1425,31 +1412,39 @@ typedef void (*mp_fn_block_allocator_recover)(void* bin, void* allocator, mp_ato
 MP_INLINE_NEVER static void mp_block_allocator_recover(mp_flist_node** bin, mp_block_allocator* allocator)
 {
 	mp_flist_node* desired;
+	MP_UNLIKELY_IF(allocator->free_count == 0)
+		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+	MP_INVARIANT(allocator->free_count != 0);
+	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_MAX_CAPACITY)
+		return mp_lcache_free(allocator, chunk_size);
 	desired = (mp_flist_node*)allocator;
 	desired->next = *bin;
 	*bin = desired;
-	MP_UNLIKELY_IF(allocator->free_count == 0)
-		allocator->free_count += mp_block_allocator_reclaim_lazy(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 }
 
 MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover(mp_flist_node** bin, mp_block_allocator_intrusive* allocator)
 {
 	mp_flist_node* desired;
+	MP_UNLIKELY_IF(allocator->free_count == 0)
+		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+	MP_INVARIANT(allocator->free_count != 0);
+	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - MP_SIZE_MAP_RESERVED_COUNTS[allocator->size_class])
+		return mp_free(allocator, mp_chunk_size_of_small(allocator->block_size));
 	desired = (mp_flist_node*)allocator;
 	desired->next = *bin;
 	*bin = desired;
-	MP_UNLIKELY_IF(allocator->free_count == 0)
-		allocator->free_count += mp_block_allocator_reclaim_lazy(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 }
 
 MP_INLINE_NEVER static void mp_block_allocator_recover_shared(mp_rlist* recovered, mp_block_allocator* allocator)
 {
 	mp_flist_node* desired;
-	desired = (mp_flist_node*)allocator;
 	// At this point only the current thread can access this block allocator, so we can do this:
 	MP_UNLIKELY_IF(allocator->free_count == 0)
-		allocator->free_count += mp_block_allocator_reclaim_lazy(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
+	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_MAX_CAPACITY)
+		return mp_lcache_free(allocator, chunk_size);
+	desired = (mp_flist_node*)allocator;
 	MP_SPIN_LOOP
 	{
 		desired->next = (mp_flist_node*)MP_ATOMIC_LOAD_ACQ_PTR(recovered);
@@ -1461,11 +1456,13 @@ MP_INLINE_NEVER static void mp_block_allocator_recover_shared(mp_rlist* recovere
 MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover_shared(mp_rlist* recovered, mp_block_allocator_intrusive* allocator)
 {
 	mp_flist_node* desired;
-	desired = (mp_flist_node*)allocator;
 	// Same with mp_block_allocator_intrusive_recover_shared:
 	MP_UNLIKELY_IF(allocator->free_count == 0)
-		allocator->free_count += mp_block_allocator_reclaim_lazy(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
+		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
+	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - MP_SIZE_MAP_RESERVED_COUNTS[allocator->size_class])
+		return mp_free(allocator, mp_chunk_size_of_small(allocator->block_size));
+	desired = (mp_flist_node*)allocator;
 	MP_SPIN_LOOP
 	{
 		desired->next = (mp_flist_node*)MP_ATOMIC_LOAD_ACQ_PTR(recovered);
