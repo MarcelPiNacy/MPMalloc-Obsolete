@@ -358,10 +358,10 @@ namespace mp
 #define MP_CTZ_64(MASK) __builtin_ctzll((MASK))
 #define MP_CLZ_32(MASK) __builtin_clz((MASK))
 #define MP_CLZ_64(MASK) __builtin_clzll((MASK))
-#define MP_ROL_32(MASK, COUNT) _rotl((MASK), (COUNT)) (((MASK) << (COUNT)) | ((MASK) >> (32 - (COUNT))))
-#define MP_ROR_32(MASK, COUNT) _rotr((MASK), (COUNT)) (((MASK) >> (COUNT)) | ((MASK) << (32 - (COUNT))))
-#define MP_ROL_64(MASK, COUNT) _rotl64((MASK), (COUNT))	(((MASK) << (COUNT)) | ((MASK) >> (64 - (COUNT))))
-#define MP_ROR_64(MASK, COUNT) _rotr64((MASK), (COUNT))	(((MASK) >> (COUNT)) | ((MASK) << (64 - (COUNT))))
+#define MP_ROL_32(MASK, COUNT) _rotl((MASK), (COUNT))
+#define MP_ROR_32(MASK, COUNT) _rotr((MASK), (COUNT))
+#define MP_ROL_64(MASK, COUNT) _rotl64((MASK), (COUNT))
+#define MP_ROR_64(MASK, COUNT) _rotr64((MASK), (COUNT))
 #ifdef __SSE2__
 #define MP_HAS_SSE2
 #endif
@@ -1886,9 +1886,8 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	MP_UNLIKELY_IF(options->backend != NULL)
 	{
 		MP_INVARIANT(
-			backend_init != NULL && backend_cleanup != NULL &&
-			backend_malloc != NULL && backend_resize != NULL &&
-			backend_free != NULL && backend_purge != NULL);
+			backend_init != NULL && backend_cleanup != NULL && backend_malloc != NULL &&
+			backend_resize != NULL && backend_free != NULL && backend_purge != NULL);
 		backend_init = options->backend->init;
 		backend_cleanup = options->backend->cleanup;
 		backend_malloc = options->backend->malloc;
