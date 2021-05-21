@@ -795,7 +795,6 @@ static size_t chunk_size_mask;
 static size_t large_page_size;
 static uint8_t page_size_log2;
 static uint8_t chunk_size_log2;
-static uint8_t tcache_large_sc_count;
 static uint8_t tcache_small_sc_count;
 #ifdef MP_64BIT
 static mp_bool mp_init_flag;
@@ -872,6 +871,11 @@ static MP_CONST uint8_t MP_SIZE_MAP_SIZES[MP_SIZE_MAP_MAX_LOG2] =
 static uint8_t MP_SIZE_MAP_OFFSETS[MP_SIZE_MAP_MAX_LOG2 + 1];
 static uint8_t MP_SIZE_MAP_RESERVED_COUNTS[MP_MAX_BLOCK_ALLOCATOR_INTRUSIVE_MULTIBLOCK_HEADER];
 
+MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc_large(size_t size)
+{
+	return MP_SIZE_CLASS_COUNT + MP_CEIL_LOG2(size) - page_size_log2;
+}
+
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc(size_t size)
 {
 	uint_fast16_t tmp;
@@ -880,7 +884,7 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc(size_t size)
 		return 0;
 	i = MP_FLOOR_LOG2(size);
 	MP_UNLIKELY_IF(i >= MP_SIZE_MAP_MAX_LOG2)
-		return MP_SIZE_CLASS_COUNT + MP_CEIL_LOG2(size) - page_size_log2;
+		return mp_size_to_sc_large(size);
 	for (j = 0; j != MP_SIZE_MAP_SIZES[i]; ++j)
 	{
 		tmp = MP_SIZE_MAP[i][j];
@@ -888,6 +892,12 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc(size_t size)
 			return MP_SIZE_MAP_OFFSETS[i] + j;
 	}
 	return MP_SIZE_MAP_OFFSETS[i + 1];
+}
+
+MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_sc_large_bin_index(uint_fast8_t sc)
+{
+	MP_INVARIANT(sc >= MP_SIZE_CLASS_COUNT);
+	return sc - (MP_SIZE_CLASS_COUNT + 1);
 }
 
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_sc_to_size_large_log2(uint_fast8_t sc)
@@ -973,7 +983,7 @@ MP_INLINE_ALWAYS static void mp_os_init(const mp_init_options* options)
 	va2_ext_param.Type = MemExtendedParameterAddressRequirements;
 	va2_ext_param.Pointer = &va2_addr_req;
 	va2_flags = MEM_RESERVE | MEM_COMMIT;
-	if (!(options->flags & MP_INIT_ENABLE_LARGE_PAGES))
+	MP_UNLIKELY_IF(!(options->flags & MP_INIT_ENABLE_LARGE_PAGES))
 		return;
 	h = NULL;
 	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY, &h))
@@ -1230,7 +1240,7 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 	mp_tcache* r;
 	uint8_t* buffer;
 	size_t k, tcache_large_bin_buffer_size, tcache_buffer_size;
-	tcache_large_bin_buffer_size = (size_t)MP_PTR_SIZE * tcache_large_sc_count;
+	tcache_large_bin_buffer_size = (size_t)MP_PTR_SIZE * (chunk_size_log2 - page_size_log2 - 2);
 	tcache_buffer_size = (MP_TCACHE_SMALL_BIN_BUFFER_SIZE + tcache_large_bin_buffer_size) * 2;
 	k = sizeof(mp_tcache) + tcache_buffer_size;
 	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, k);
@@ -1331,7 +1341,7 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_chunk_size_of(size_t size)
 {
 	MP_INVARIANT(size != 0);
 	MP_UNLIKELY_IF(size <= page_size)
-		return MP_CEIL_POW2(size * MP_BLOCK_ALLOCATOR_MAX_CAPACITY);
+		return MP_CEIL_POW2(size * MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY);
 	size *= MP_BLOCK_ALLOCATOR_MAX_CAPACITY;
 	MP_UNLIKELY_IF(size >= chunk_size)
 		return chunk_size;
@@ -1343,7 +1353,7 @@ MP_PURE MP_INLINE_ALWAYS static mp_bool mp_is_valid_block_allocator(mp_block_all
 	return
 		allocator->owner != NULL && allocator->buffer != NULL &&
 		allocator->free_count <= MP_BLOCK_ALLOCATOR_MAX_CAPACITY &&
-		mp_sc_to_size(allocator->size_class) > page_size && allocator->size_class < tcache_large_sc_count &&
+		mp_sc_to_size(allocator->size_class) > page_size && mp_sc_to_size_large_log2(allocator->size_class) < chunk_size_log2 &&
 		(uint8_t)allocator->linked < 2;
 }
 
@@ -1373,7 +1383,7 @@ MP_INLINE_ALWAYS static mp_bool mp_block_allocator_owns(mp_block_allocator* allo
 	MP_INVARIANT(mp_is_valid_block_allocator(allocator));
 	MP_UNLIKELY_IF((uint8_t*)ptr < (uint8_t*)allocator->buffer)
 		return MP_FALSE;
-	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator->buffer + mp_chunk_size_of(mp_sc_to_size_large(allocator->size_class)))
+	MP_UNLIKELY_IF((uint8_t*)ptr >= (uint8_t*)allocator->buffer + chunk_size)
 		return MP_FALSE;
 	index = mp_block_allocator_index_of(allocator, ptr);
 	mask_index = index >> MP_PTR_BITS_LOG2;
@@ -1443,7 +1453,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_alloc
 			break;
 	MP_INVARIANT(mask_index != MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	bit_index = MP_CTZ(allocator->free_map[mask_index]);
-	MP_INVARIANT(MP_BT(allocator->free_map[mask_index], bit_index));
+	MP_INVARIANT(((mask_index << MP_PTR_BITS_LOG2) | bit_index) >= mp_block_allocator_intrusive_reserved_count_of(allocator->size_class));
 	MP_BR(allocator->free_map[mask_index], bit_index);
 	--allocator->free_count;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
@@ -1549,7 +1559,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free(mp_block_allocator* allocat
 	bit_index = index & MP_PTR_BITS_MASK;
 	MP_BS(allocator->free_map[mask_index], bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked) && MP_ATOMIC_TAS_ACQ(&allocator->linked))
-		mp_block_allocator_recover((mp_flist_node**)(allocator->owner->bins_large + allocator->size_class), allocator);
+		mp_block_allocator_recover((mp_flist_node**)(allocator->owner->bins_large + mp_sc_large_bin_index(allocator->size_class)), allocator);
 }
 
 MP_INLINE_ALWAYS static void mp_block_allocator_free_shared(mp_block_allocator* allocator, void* ptr)
@@ -1561,7 +1571,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free_shared(mp_block_allocator* 
 	bit_index = index & MP_PTR_BITS_MASK;
 	MP_ATOMIC_BIT_SET_REL(allocator->marked_map + mask_index, bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked) && MP_ATOMIC_TAS_ACQ(&allocator->linked))
-		mp_block_allocator_recover_shared(allocator->owner->recovered_large + allocator->size_class, allocator);
+		mp_block_allocator_recover_shared(allocator->owner->recovered_large + mp_sc_large_bin_index(allocator->size_class), allocator);
 }
 
 MP_INLINE_ALWAYS static mp_block_allocator_intrusive* mp_tcache_block_allocator_intrusive_allocator_of(const void* ptr, size_t chunk_size)
@@ -1787,12 +1797,38 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size
 	return r;
 }
 
+static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
+{
+	void* r;
+	mp_block_allocator_intrusive** bin;
+	mp_block_allocator_intrusive* allocator;
+	uint_fast8_t sc;
+	sc = mp_size_to_sc(size);
+	MP_INVARIANT(sc < tcache_small_sc_count);
+	bin = tcache->bins + sc;
+	MP_UNLIKELY_IF(*bin == NULL && MP_ATOMIC_LOAD_ACQ_PTR(tcache->recovered + sc) != NULL)
+		* bin = (mp_block_allocator_intrusive*)MP_ATOMIC_XCHG_ACQ_PTR(tcache->recovered + sc, NULL);
+	allocator = *bin;
+	MP_UNLIKELY_IF(allocator == NULL)
+		return (flags & MP_ENABLE_FALLBACK) ? mp_tcache_malloc_small_slow(tcache, size, sc) : NULL;
+	r = mp_block_allocator_intrusive_malloc(allocator);
+	MP_INVARIANT(r != NULL);
+	MP_UNLIKELY_IF(allocator->free_count == 0)
+	{
+		MP_ATOMIC_CLEAR_REL(&allocator->linked);
+		*bin = (*bin)->next;
+	}
+	return r;
+}
+
 MP_INLINE_NEVER static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size_t size, uint_fast8_t sc)
 {
 	void* r;
 	void* buffer;
 	mp_block_allocator* allocator;
 	mp_block_allocator** bin;
+	uint_fast8_t bin_index;
+	bin_index = mp_sc_large_bin_index(sc);
 	MP_INVARIANT(this_tcache != NULL);
 	buffer = mp_lcache_malloc(chunk_size, MP_ENABLE_FALLBACK);
 	MP_UNLIKELY_IF(buffer == NULL)
@@ -1808,41 +1844,18 @@ MP_INLINE_NEVER static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size
 	return r;
 }
 
-static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
-{
-	void* r;
-	mp_block_allocator_intrusive** bin;
-	mp_block_allocator_intrusive* allocator;
-	uint_fast8_t sc;
-	sc = mp_size_to_sc(size);
-	MP_INVARIANT(sc < tcache_small_sc_count);
-	bin = tcache->bins + sc;
-	MP_UNLIKELY_IF(*bin == NULL && MP_ATOMIC_LOAD_ACQ_PTR(tcache->recovered + sc) != NULL)
-		*bin = (mp_block_allocator_intrusive*)MP_ATOMIC_XCHG_ACQ_PTR(tcache->recovered + sc, NULL);
-	allocator = *bin;
-	MP_UNLIKELY_IF(allocator == NULL)
-		return (flags & MP_ENABLE_FALLBACK) ? mp_tcache_malloc_small_slow(tcache, size, sc) : NULL;
-	r = mp_block_allocator_intrusive_malloc(allocator);
-	MP_INVARIANT(r != NULL);
-	MP_UNLIKELY_IF(allocator->free_count == 0)
-	{
-		MP_ATOMIC_CLEAR_REL(&allocator->linked);
-		*bin = (*bin)->next;
-	}
-	return r;
-}
-
 static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
 {
 	void* r;
 	mp_block_allocator** bin;
 	mp_block_allocator* allocator;
-	uint_fast8_t sc;
+	uint_fast8_t sc, bin_index;
 	sc = mp_size_to_sc(size);
+	bin_index = mp_sc_large_bin_index(sc);
 	MP_INVARIANT(size == mp_sc_to_size(sc));
-	bin = tcache->bins_large + sc;
-	MP_UNLIKELY_IF(*bin == NULL && MP_ATOMIC_LOAD_ACQ_PTR(tcache->recovered_large + sc) != NULL)
-		*bin = (mp_block_allocator*)MP_ATOMIC_XCHG_ACQ_PTR(tcache->recovered_large + sc, NULL);
+	bin = tcache->bins_large + bin_index;
+	MP_UNLIKELY_IF(*bin == NULL && MP_ATOMIC_LOAD_ACQ_PTR(tcache->recovered_large + bin_index) != NULL)
+		*bin = (mp_block_allocator*)MP_ATOMIC_XCHG_ACQ_PTR(tcache->recovered_large + bin_index, NULL);
 	allocator = *bin;
 	MP_UNLIKELY_IF(allocator == NULL)
 		return (flags & MP_ENABLE_FALLBACK) ? mp_tcache_malloc_large_slow(tcache, size, sc) : NULL;
@@ -1865,7 +1878,7 @@ MP_INLINE_ALWAYS static void mp_this_tcache_check_integrity()
 	for (i = 0; i != tcache_small_sc_count; ++i)
 		for (intrusive_allocator = this_tcache->bins[i]; intrusive_allocator != NULL; intrusive_allocator = intrusive_allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator_intrusive(intrusive_allocator));
-	for (i = 0; i != tcache_large_sc_count; ++i)
+	for (i = 0; i != chunk_size_log2 - page_size_log2 - 2; ++i)
 		for (allocator = this_tcache->bins_large[i]; allocator != NULL; allocator = allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator(allocator));
 #endif
@@ -1895,8 +1908,7 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	chunk_size_mask = chunk_size - 1;
 	page_size_log2 = MP_FLOOR_LOG2(page_size);
 	chunk_size_log2 = MP_FLOOR_LOG2(chunk_size);
-	tcache_small_sc_count = MP_SIZE_CLASS_COUNT + (1 + page_size_log2 - MP_SIZE_MAP_MAX_LOG2);
-	tcache_large_sc_count = chunk_size_log2 - page_size_log2 - 1;
+	tcache_small_sc_count = MP_SIZE_CLASS_COUNT + page_size_log2;
 	MP_INVARIANT(page_size_log2 >= 12);
 	MP_INVARIANT(chunk_size_log2 >= 20);
 	for (n = i = 0; i != MP_SIZE_MAP_MAX_LOG2; ++i)
