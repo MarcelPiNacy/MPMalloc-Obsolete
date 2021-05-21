@@ -11,6 +11,55 @@
 	limitations under the License.
 */
 
+// ================================================================
+//	HELP
+// ================================================================
+/*
+1. Macros
+	- MP_DEBUG:
+		Enabled if _DEBUG is defined and NDEBUG is not.
+		Enables the internal debugger, substitutes assume statements with assertions, adds overflow checks and fills allocations with garbage values.
+
+	- MP_CALL:
+		Used to override the calling convention of the public functions of MPMalloc.
+
+	- MP_ATTR:
+		Used to add custom attributes to the public functions of MPMalloc.
+
+	- MP_PTR:
+		Used to override the calling convention of function pointers, such as backend allocator callbacks.
+
+	- MP_CACHE_LINE_SIZE:
+		Specifies the cache line size of the target platform, which affects the rate at which MPMalloc requests memory to the backend/OS.
+		Currently only values of 32, 64 and 128 are supported.
+
+	- MP_JUNK_VALUE:
+		Used to memset allocations when MP_DEBUG is defined.
+
+	- MP_CHECK_OVERFLOW:
+		Enables overflow checks on free. Essentially appends "MP_REDZONE_SIZE" extra bytes to each allocation and memsets this range with "MP_REDZONE_VALUE".
+
+	- MP_REDZONE_SIZE:
+		The number of redzone bytes to append to each allocation.
+
+	- MP_REDZONE_VALUE:
+		The value to which redzones are initialized.
+
+	- MP_NODISCARD:
+		Defined to [[nodiscard]] if this C++ attribute is available.
+
+	- MP_LARGE_PAGE_SUPPORT:
+		If defined, includes the necessary system headers required for using large pages.
+		MP_INIT_ENABLE_LARGE_PAGES must still be passed to mp_init to actually enable large pages.
+
+	- MP_STRICT_CHUNK_FREELIST:
+		By default, MPMalloc's lock-free freelist for chunks uses the lower bits of the node pointers as generation counters to avoid ABA issues.
+		Since MPMalloc doesn't support page sizes smaller than 4KiB and cache line sizes smaller than 32 bytes, the minimum chunk size possible is 2^20.
+		This means that unless the number of running threads accessing a single free-list exceeds this value (minus one), ABA issues aren't possible.
+		Defining this turns these freelists into CMPXCHG16B-based ones, which is much slower but it's safer.
+		Unless the number of threads can exceed 2^32 or 2^64...
+*/
+
 #ifndef MP_INCLUDED
 #define MP_INCLUDED
 
@@ -39,10 +88,6 @@
 
 #ifndef MP_PTR
 #define MP_PTR
-#endif
-
-#ifndef MP_SPIN_THRESHOLD
-#define MP_SPIN_THRESHOLD 16
 #endif
 
 #ifndef MP_CACHE_LINE_SIZE
@@ -322,10 +367,14 @@ namespace mp
 #include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
+#ifdef MP_LARGE_PAGE_SUPPORT
 #include <hugetlbfs.h>
+#endif
 #elif defined(MP_TARGET_WINDOWS)
 #include <Windows.h>
+#ifdef MP_LARGE_PAGE_SUPPORT
 #include <ntsecapi.h>
+#endif
 #else
 #error "MPMALLOC: UNSUPPORTED TARGET OPERATING SYSTEM"
 #endif
@@ -713,7 +762,7 @@ typedef MP_ATOMIC(void*) mp_atomic_address;
 typedef struct mp_flist_node { struct mp_flist_node* next; } mp_flist_node;
 typedef MP_ATOMIC(mp_flist_node*) mp_rlist;
 
-#ifndef MP_STRICT_FREELIST
+#ifndef MP_STRICT_CHUNK_FREELIST
 typedef size_t mp_chunk_list_head;
 #else
 typedef struct mp_chunk_list_head
@@ -964,15 +1013,17 @@ static MEM_EXTENDED_PARAMETER va2_ext_param;
 
 MP_INLINE_ALWAYS static void mp_os_init(const mp_init_options* options)
 {
-	static const char errmsg[] = "Failed to acquire the SE_LOCK_MEMORY_NAME privilege, which is required to use large pages in MPMalloc.";
 	HMODULE m;
-	HANDLE h;
+#ifdef MP_LARGE_PAGE_SUPPORT
 	DWORD n;
+	HANDLE h;
 	TOKEN_USER users[64];
 	LSA_HANDLE policy;
 	LSA_OBJECT_ATTRIBUTES attrs;
 	LSA_UNICODE_STRING rights;
 	TOKEN_PRIVILEGES p;
+	static const char errmsg[] = "Failed to acquire the SE_LOCK_MEMORY_NAME privilege, which is required to use large pages in MPMalloc.";
+#endif
 	m = GetModuleHandle(TEXT("KernelBase.DLL"));
 	MP_INVARIANT(m != NULL);
 	va2_ptr = (VirtualAlloc2_t)GetProcAddress(m, "VirtualAlloc2");
@@ -983,6 +1034,7 @@ MP_INLINE_ALWAYS static void mp_os_init(const mp_init_options* options)
 	va2_ext_param.Type = MemExtendedParameterAddressRequirements;
 	va2_ext_param.Pointer = &va2_addr_req;
 	va2_flags = MEM_RESERVE | MEM_COMMIT;
+#ifdef MP_LARGE_PAGE_SUPPORT
 	MP_UNLIKELY_IF(!(options->flags & MP_INIT_ENABLE_LARGE_PAGES))
 		return;
 	h = NULL;
@@ -1011,6 +1063,9 @@ MP_INLINE_ALWAYS static void mp_os_init(const mp_init_options* options)
 		return MP_EMMIT_ERROR(errmsg);
 	va2_flags |= MEM_LARGE_PAGES;
 	CloseHandle(h);
+#else
+	MP_INVARIANT(!(options->flags & MP_INIT_ENABLE_LARGE_PAGES));
+#endif
 }
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
@@ -1093,12 +1148,12 @@ MP_INLINE_ALWAYS static void mp_chunk_list_push(mp_chunk_list* head, void* ptr)
 	mp_flist_node* new_head;
 	mp_chunk_list_head prior, desired;
 	new_head = (mp_flist_node*)ptr;
-#ifdef MP_STRICT_FREELIST
+#ifdef MP_STRICT_CHUNK_FREELIST
 	desired.head = new_head;
 #endif
 	MP_SPIN_LOOP
 	{
-#ifndef MP_STRICT_FREELIST
+#ifndef MP_STRICT_CHUNK_FREELIST
 		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
 		new_head->next = (mp_flist_node*)(prior & ~chunk_size_mask);
 		desired = (size_t)new_head | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
@@ -1121,7 +1176,7 @@ MP_INLINE_ALWAYS static void* mp_chunk_list_pop(mp_chunk_list* head)
 	mp_chunk_list_head prior, desired;
 	MP_SPIN_LOOP
 	{
-#ifndef MP_STRICT_FREELIST
+#ifndef MP_STRICT_CHUNK_FREELIST
 		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
 		r = (mp_flist_node*)(prior & ~chunk_size_mask);
 		MP_UNLIKELY_IF(r == NULL)
@@ -1682,6 +1737,7 @@ static size_t lcache_bin_count;
 static mp_chunk_list* lcache_bins;
 #else
 static mp_trie_root lcache_bin_roots[MP_TRIE_ROOT_SIZE];
+MP_SHARED_ATTR static MP_ATOMIC(mp_chunk_list) single_chunk_list;
 #endif
 MP_SHARED_ATTR static MP_ATOMIC(size_t) lcache_total_memory;
 MP_SHARED_ATTR static MP_ATOMIC(size_t) lcache_active_memory;
@@ -1717,10 +1773,13 @@ MP_INLINE_ALWAYS static void mp_lcache_init()
 MP_INLINE_ALWAYS static mp_chunk_list* mp_lcache_find_bin(size_t size)
 {
 	size >>= chunk_size_log2;
-	size -= size != 0;
 #ifdef MP_32BIT
+	size -= size != 0;
 	return lcache_bins + size;
 #else
+	MP_LIKELY_IF(size <= chunk_size)
+		return &single_chunk_list;
+	--size;
 	return (mp_chunk_list*)mp_trie_find(lcache_bin_roots, size, MP_FLOOR_LOG2(sizeof(mp_chunk_list)));
 #endif
 }
@@ -1731,7 +1790,9 @@ MP_INLINE_ALWAYS static mp_chunk_list* mp_lcache_insert_bin(size_t size)
 	return mp_lcache_find_bin(size);
 #else
 	size >>= chunk_size_log2;
-	size -= size != 0;
+	MP_LIKELY_IF(size <= chunk_size)
+		return &single_chunk_list;
+	--size;
 	return (mp_chunk_list*)mp_trie_insert(lcache_bin_roots, size, MP_FLOOR_LOG2(sizeof(mp_chunk_list)));
 #endif
 }
