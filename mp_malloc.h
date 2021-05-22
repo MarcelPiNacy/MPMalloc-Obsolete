@@ -66,6 +66,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include <unordered_set>
+inline std::unordered_set<void*> allocators;
+
 #ifdef __linux__
 #define MP_TARGET_LINUX
 #elif defined(_WIN32)
@@ -572,9 +575,11 @@ typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
 #define MP_ATOMIC_BIT_SET_REL(WHERE, VALUE)						(void)__atomic_fetch_or((mp_atomic_size_t*)(WHERE), (size_t)1 << (uint_fast8_t)(VALUE), __ATOMIC_RELEASE)
 #define MP_ATOMIC_ACQUIRE_FENCE									__atomic_thread_fence(__ATOMIC_ACQUIRE)
 #ifdef MP_32BIT
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						TARGET = __atomic_load_n((volatile int64_t*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile int64_t*)(WHERE), (int64_t*)(EXPECTED), *(const int64_t*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile int64_t*)(WHERE), (int64_t*)(EXPECTED), *(const int64_t*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #else
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						TARGET = __atomic_load_n((volatile __int128*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #endif
@@ -616,7 +621,7 @@ typedef volatile mp_msvc_size_t mp_msvc_atomic_size_t;
 #define MP_ATOMIC_FAS_ACQ(WHERE, VALUE) (size_t)MP_MSVC_ATOMIC_ACQ(_InterlockedExchangeAdd)((mp_msvc_atomic_size_t*)(WHERE), -(mp_msvc_size_t)(VALUE))
 #define MP_ATOMIC_FAS_REL(WHERE, VALUE) (size_t)MP_MSVC_ATOMIC_REL(_InterlockedExchangeAdd)((mp_msvc_atomic_size_t*)(WHERE), -(mp_msvc_size_t)(VALUE))
 #define MP_ATOMIC_BIT_SET_REL(WHERE, VALUE) (void)MP_MSVC_ATOMIC_REL(_interlockedbittestandset)((mp_msvc_atomic_size_t*)(WHERE), (uint_fast8_t)(VALUE))
-#define MP_ATOMIC_ACQUIRE_FENCE MemoryBarrier()
+#define MP_ATOMIC_ACQUIRE_FENCE _ReadBarrier()
 
 typedef struct mp_msvc_uintptr_pair { MP_ALIGNAS(MP_DPTR_SIZE) size_t a, b; } mp_msvc_uintptr_pair;
 
@@ -642,9 +647,11 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 #endif
 }
 
-#define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE) mp_impl_cmpxchg16_acq((volatile mp_msvc_uintptr_pair*)(WHERE), (const mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
-#define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE) mp_impl_cmpxchg16_rel((volatile mp_msvc_uintptr_pair*)(WHERE), (const mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)				(void)memcpy(&(TARGET), (const void*)(WHERE), sizeof((TARGET))); MP_ATOMIC_ACQUIRE_FENCE
+#define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_acq((volatile mp_msvc_uintptr_pair*)(WHERE), (const mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
+#define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_rel((volatile mp_msvc_uintptr_pair*)(WHERE), (const mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
 #endif
+
 #define MP_ATOMIC_LOAD_ACQ_PTR(WHERE) (void*)MP_ATOMIC_LOAD_ACQ_UPTR((mp_atomic_size_t*)WHERE)
 #define MP_ATOMIC_STORE_REL_PTR(WHERE, VALUE) MP_ATOMIC_STORE_REL_UPTR((mp_atomic_size_t*)WHERE, (size_t)VALUE)
 #define MP_ATOMIC_XCHG_ACQ_PTR(WHERE, VALUE) (void*)MP_ATOMIC_XCHG_ACQ_UPTR((mp_atomic_size_t*)WHERE, (size_t)VALUE)
@@ -760,17 +767,20 @@ typedef MP_ATOMIC(size_t) mp_atomic_size_t;
 typedef MP_ATOMIC(void*) mp_atomic_address;
 
 typedef struct mp_flist_node { struct mp_flist_node* next; } mp_flist_node;
-typedef MP_ATOMIC(mp_flist_node*) mp_rlist;
+
+typedef struct mp_wcas_list_head
+{
+	MP_ALIGNAS(MP_DPTR_SIZE) mp_flist_node* head;
+	size_t counter;
+} mp_wcas_list_head;
+typedef MP_ATOMIC(mp_wcas_list_head) mp_wcas_list;
 
 #ifndef MP_STRICT_CHUNK_FREELIST
 typedef size_t mp_chunk_list_head;
 #else
-typedef struct mp_chunk_list_head
-{
-	MP_ALIGNAS(MP_DPTR_SIZE) mp_flist_node* head;
-	size_t counter;
-} mp_chunk_list_head;
+typedef mp_wcas_list_head mp_chunk_list_head;
 #endif
+
 typedef MP_ATOMIC(mp_chunk_list_head) mp_chunk_list;
 
 typedef struct mp_persistent_node
@@ -815,9 +825,9 @@ typedef struct mp_tcache_stats
 typedef struct mp_tcache
 {
 	MP_SHARED_ATTR mp_block_allocator_intrusive** bins;
-	mp_rlist* recovered;
+	mp_wcas_list* recovered_small;
 	mp_block_allocator** bins_large;
-	mp_rlist* recovered_large;
+	mp_wcas_list* recovered_large;
 	struct mp_tcache* next;
 	mp_tcache_stats stats;
 } mp_tcache;
@@ -845,6 +855,7 @@ static size_t large_page_size;
 static uint8_t page_size_log2;
 static uint8_t chunk_size_log2;
 static uint8_t tcache_small_sc_count;
+static uint8_t tcache_large_sc_count;
 #ifdef MP_64BIT
 static mp_bool mp_init_flag;
 #endif
@@ -1140,53 +1151,32 @@ static mp_fn_purge backend_purge = mp_os_purge;
 #endif
 
 // ================================================================
-//	LOCK-FREE CHUNK FREE LIST
+//	LOCK-FREE FREE-LIST
 // ================================================================
 
-MP_INLINE_ALWAYS static void mp_chunk_list_push(mp_chunk_list* head, void* ptr)
+MP_INLINE_ALWAYS static void mp_wcas_list_push(mp_wcas_list* head, void* ptr)
 {
 	mp_flist_node* new_head;
-	mp_chunk_list_head prior, desired;
+	mp_wcas_list_head prior, desired;
 	new_head = (mp_flist_node*)ptr;
-#ifdef MP_STRICT_CHUNK_FREELIST
 	desired.head = new_head;
-#endif
 	MP_SPIN_LOOP
 	{
-#ifndef MP_STRICT_CHUNK_FREELIST
-		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
-		new_head->next = (mp_flist_node*)(prior & ~chunk_size_mask);
-		desired = (size_t)new_head | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
-		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_REL_UPTR(head, &prior, desired))
-			break;
-#else
-		(void)memcpy(&prior, (void*)head, MP_DPTR_SIZE);
-		MP_ATOMIC_ACQUIRE_FENCE;
+		MP_ATOMIC_WLOAD_ACQ(head, prior);
 		new_head->next = prior.head;
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_ACQ(head, &prior, &desired))
 			break;
-#endif
 	}
 }
 
-MP_INLINE_ALWAYS static void* mp_chunk_list_pop(mp_chunk_list* head)
+MP_INLINE_ALWAYS static void* mp_wcas_list_pop(mp_wcas_list* head)
 {
 	mp_flist_node* r;
-	mp_chunk_list_head prior, desired;
+	mp_wcas_list_head prior, desired;
 	MP_SPIN_LOOP
 	{
-#ifndef MP_STRICT_CHUNK_FREELIST
-		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
-		r = (mp_flist_node*)(prior & ~chunk_size_mask);
-		MP_UNLIKELY_IF(r == NULL)
-			return NULL;
-		desired = (size_t)r->next | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
-		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_ACQ_UPTR(head, &prior, desired))
-			return r;
-#else
-		(void)memcpy(&prior, (void*)head, MP_DPTR_SIZE);
-		MP_ATOMIC_ACQUIRE_FENCE;
+		MP_ATOMIC_WLOAD_ACQ(head, prior);
 		r = prior.head;
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
@@ -1194,8 +1184,67 @@ MP_INLINE_ALWAYS static void* mp_chunk_list_pop(mp_chunk_list* head)
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_REL(head, &prior, &desired))
 			return r;
-#endif
 	}
+}
+
+MP_INLINE_ALWAYS static void* mp_wcas_list_pop_all(mp_wcas_list* head)
+{
+	mp_flist_node* r;
+	mp_wcas_list_head prior, desired;
+	MP_SPIN_LOOP
+	{
+		MP_ATOMIC_WLOAD_ACQ(head, prior);
+		r = prior.head;
+		MP_UNLIKELY_IF(r == NULL)
+			return NULL;
+		desired.head = r->next;
+		desired.counter = prior.counter + 1;
+		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_REL(head, &prior, &desired))
+			return r;
+	}
+}
+
+// ================================================================
+//	LOCK-FREE CHUNK FREE LIST
+// ================================================================
+
+MP_INLINE_ALWAYS static void mp_chunk_list_push(mp_chunk_list* head, void* ptr)
+{
+#ifndef MP_STRICT_CHUNK_FREELIST
+	mp_flist_node* new_head;
+	mp_chunk_list_head prior, desired;
+	new_head = (mp_flist_node*)ptr;
+	MP_SPIN_LOOP
+	{
+		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
+		new_head->next = (mp_flist_node*)(prior & ~chunk_size_mask);
+		desired = (size_t)new_head | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
+		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_REL_UPTR(head, &prior, desired))
+			break;
+	}
+#else
+	mp_wcas_list_push(head, ptr);
+#endif
+}
+
+MP_INLINE_ALWAYS static void* mp_chunk_list_pop(mp_chunk_list* head)
+{
+#ifndef MP_STRICT_CHUNK_FREELIST
+	mp_flist_node* r;
+	mp_chunk_list_head prior, desired;
+	MP_SPIN_LOOP
+	{
+		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
+		r = (mp_flist_node*)(prior & ~chunk_size_mask);
+		MP_UNLIKELY_IF(r == NULL)
+			return NULL;
+		desired = (size_t)r->next | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
+		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_ACQ_UPTR(head, &prior, desired))
+			return r;
+	}
+#else
+	return mp_wcas_list_push(head);
+#endif
 }
 
 // ================================================================
@@ -1294,24 +1343,22 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 {
 	mp_tcache* r;
 	uint8_t* buffer;
-	size_t k, tcache_large_bin_buffer_size, tcache_buffer_size;
-	tcache_large_bin_buffer_size = (size_t)MP_PTR_SIZE * (chunk_size_log2 - page_size_log2 - 2);
-	tcache_buffer_size = (MP_TCACHE_SMALL_BIN_BUFFER_SIZE + tcache_large_bin_buffer_size) * 2;
-	k = sizeof(mp_tcache) + tcache_buffer_size;
-	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, k);
+	size_t buffer_size;
+	buffer_size = sizeof(mp_tcache) + (size_t)(tcache_small_sc_count + tcache_large_sc_count) * (MP_PTR_SIZE + sizeof(mp_wcas_list));
+	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, buffer_size);
 	MP_INVARIANT(buffer != NULL);
 #if defined(MP_DEBUG) || !defined(MP_NO_CUSTOM_BACKEND)
-	(void)memset(buffer, 0, k);
+	(void)memset(buffer, 0, buffer_size);
 #endif
 	r = (mp_tcache*)buffer;
 	buffer += sizeof(mp_tcache);
 	r->bins = (mp_block_allocator_intrusive**)buffer;
-	buffer += MP_TCACHE_SMALL_BIN_BUFFER_SIZE;
-	r->recovered = (mp_rlist*)buffer;
-	buffer += MP_TCACHE_SMALL_BIN_BUFFER_SIZE;
+	buffer = (uint8_t*)(r->bins + tcache_small_sc_count);
 	r->bins_large = (mp_block_allocator**)buffer;
-	buffer += tcache_large_bin_buffer_size;
-	r->recovered_large = (mp_rlist*)buffer;
+	buffer = (uint8_t*)(r->bins_large + tcache_large_sc_count);
+	r->recovered_small = (mp_wcas_list*)buffer;
+	buffer = (uint8_t*)(r->recovered_small + tcache_small_sc_count);
+	r->recovered_large = (mp_wcas_list*)buffer;
 	return r;
 }
 
@@ -1337,6 +1384,23 @@ MP_INLINE_ALWAYS static void mp_tcache_release(mp_tcache* tcache)
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_REL(&tcache_freelist, &prior, &desired))
 			break;
 	}
+}
+
+// ================================================================
+//	RECOVERY CACHE
+// ================================================================
+
+static mp_wcas_list* rcache_small;
+static mp_wcas_list* rcache_large;
+
+MP_INLINE_ALWAYS static void mp_rcache_init()
+{
+	size_t buffer_size = (tcache_large_sc_count + tcache_small_sc_count) * sizeof(mp_wcas_list);
+	uint8_t* buffer = (uint8_t*)mp_persistent_malloc(buffer_size);
+	(void)memset(buffer, 0, buffer_size);
+	rcache_small = (mp_wcas_list*)buffer;
+	buffer = (uint8_t*)(rcache_small + tcache_small_sc_count);
+	rcache_large = (mp_wcas_list*)buffer;
 }
 
 // ================================================================
@@ -1544,38 +1608,24 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover(mp_flist_node**
 	*bin = desired;
 }
 
-MP_INLINE_NEVER static void mp_block_allocator_recover_shared(mp_rlist* recovered, mp_block_allocator* allocator)
+MP_INLINE_NEVER static void mp_block_allocator_recover_shared(mp_wcas_list* recovered_small, mp_block_allocator* allocator)
 {
-	mp_flist_node* desired;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_MAX_CAPACITY)
 		return mp_lcache_free(allocator, chunk_size);
-	desired = (mp_flist_node*)allocator;
-	MP_SPIN_LOOP
-	{
-		desired->next = (mp_flist_node*)MP_ATOMIC_LOAD_ACQ_PTR(recovered);
-		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_REL_PTR(recovered, &desired->next, desired)) // ABA issue
-			break;
-	}
+	mp_wcas_list_push(recovered_small, allocator);
 }
 
-MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover_shared(mp_rlist* recovered, mp_block_allocator_intrusive* allocator)
+MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover_shared(mp_wcas_list* recovered_small, mp_block_allocator_intrusive* allocator)
 {
-	mp_flist_node* desired;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - mp_block_allocator_intrusive_reserved_count_of(allocator->size_class))
 		return mp_free(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
-	desired = (mp_flist_node*)allocator;
-	MP_SPIN_LOOP
-	{
-		desired->next = (mp_flist_node*)MP_ATOMIC_LOAD_ACQ_PTR(recovered);
-		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_REL_PTR(recovered, &desired->next, desired)) // ABA issue
-			break;
-	}
+	mp_wcas_list_push(recovered_small, allocator);
 }
 
 MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_free(mp_block_allocator_intrusive* allocator, void* ptr)
@@ -1600,7 +1650,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_free_shared(mp_block_a
 	bit_index = index & MP_PTR_BITS_MASK;
 	MP_ATOMIC_BIT_SET_REL(allocator->marked_map + mask_index, bit_index);
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked) && MP_ATOMIC_TAS_ACQ(&allocator->linked))
-		mp_block_allocator_intrusive_recover_shared(allocator->owner->recovered + allocator->size_class, allocator);
+		mp_block_allocator_intrusive_recover_shared(allocator->owner->recovered_small + allocator->size_class, allocator);
 }
 
 MP_INLINE_ALWAYS static void mp_block_allocator_free(mp_block_allocator* allocator, void* ptr)
@@ -1854,6 +1904,7 @@ static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size_t size, uint_fa
 
 static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
 {
+	mp_wcas_list_head rhead;
 	void* r;
 	mp_block_allocator_intrusive** bin;
 	mp_block_allocator_intrusive* allocator;
@@ -1861,8 +1912,12 @@ static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fa
 	sc = mp_size_to_sc(size);
 	MP_INVARIANT(sc < tcache_small_sc_count);
 	bin = tcache->bins + sc;
-	MP_UNLIKELY_IF(*bin == NULL && MP_ATOMIC_LOAD_ACQ_PTR(tcache->recovered + sc) != NULL)
-		* bin = (mp_block_allocator_intrusive*)MP_ATOMIC_XCHG_ACQ_PTR(tcache->recovered + sc, NULL);
+	MP_UNLIKELY_IF(*bin == NULL)
+	{
+		MP_ATOMIC_WLOAD_ACQ(tcache->recovered_small + sc, rhead);
+		MP_UNLIKELY_IF(rhead.head != NULL)
+			*bin = (mp_block_allocator_intrusive*)mp_wcas_list_pop_all(tcache->recovered_small + sc);
+	}
 	allocator = *bin;
 	MP_UNLIKELY_IF(allocator == NULL)
 		goto Fallback;
@@ -1905,6 +1960,7 @@ static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size_t size, uint_fa
 
 static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fast64_t flags)
 {
+	mp_wcas_list_head rhead;
 	void* r;
 	mp_block_allocator** bin;
 	mp_block_allocator* allocator;
@@ -1913,8 +1969,12 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 	bin_index = mp_sc_large_bin_index(sc);
 	MP_INVARIANT(size == mp_sc_to_size(sc));
 	bin = tcache->bins_large + bin_index;
-	MP_UNLIKELY_IF(*bin == NULL && MP_ATOMIC_LOAD_ACQ_PTR(tcache->recovered_large + bin_index) != NULL)
-		*bin = (mp_block_allocator*)MP_ATOMIC_XCHG_ACQ_PTR(tcache->recovered_large + bin_index, NULL);
+	MP_UNLIKELY_IF(*bin == NULL)
+	{
+		MP_ATOMIC_WLOAD_ACQ(tcache->recovered_large + bin_index, rhead);
+		MP_UNLIKELY_IF(rhead.head != NULL)
+			*bin = (mp_block_allocator*)mp_wcas_list_pop_all(tcache->recovered_large + bin_index);
+	}
 	allocator = *bin;
 	MP_UNLIKELY_IF(allocator == NULL)
 		goto Fallback;
@@ -1972,6 +2032,7 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	page_size_log2 = MP_FLOOR_LOG2(page_size);
 	chunk_size_log2 = MP_FLOOR_LOG2(chunk_size);
 	tcache_small_sc_count = MP_SIZE_CLASS_COUNT + page_size_log2;
+	tcache_large_sc_count = chunk_size_log2 - page_size_log2 - 2;
 	MP_INVARIANT(page_size_log2 >= 12);
 	MP_INVARIANT(chunk_size_log2 >= 20);
 	for (n = i = 0; i != MP_SIZE_MAP_MAX_LOG2; ++i)
