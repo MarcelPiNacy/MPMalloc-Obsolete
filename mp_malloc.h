@@ -575,11 +575,11 @@ typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
 #define MP_ATOMIC_BIT_SET_REL(WHERE, VALUE)						(void)__atomic_fetch_or((mp_atomic_size_t*)(WHERE), (size_t)1 << (uint_fast8_t)(VALUE), __ATOMIC_RELEASE)
 #define MP_ATOMIC_ACQUIRE_FENCE									__atomic_thread_fence(__ATOMIC_ACQUIRE)
 #ifdef MP_32BIT
-#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						TARGET = __atomic_load_n((volatile int64_t*)(WHERE), __ATOMIC_ACQUIRE)
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						*((int64_t*)&(TARGET)) = __atomic_load_n((volatile int64_t*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile int64_t*)(WHERE), (int64_t*)(EXPECTED), *(const int64_t*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile int64_t*)(WHERE), (int64_t*)(EXPECTED), *(const int64_t*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #else
-#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						TARGET = __atomic_load_n((volatile __int128*)(WHERE), __ATOMIC_ACQUIRE)
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						*((__int128*)&(TARGET)) = __atomic_load_n((volatile __int128*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #endif
