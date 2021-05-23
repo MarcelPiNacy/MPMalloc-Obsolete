@@ -1099,6 +1099,14 @@ MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 	(void)DiscardVirtualMemory(ptr, size);
 }
 
+MP_INLINE_ALWAYS static void mp_os_prefetch_pages(void* ptr, size_t size)
+{
+	WIN32_MEMORY_RANGE_ENTRY entries;
+	entries.NumberOfBytes = size;
+	entries.VirtualAddress = ptr;
+	(void)PrefetchVirtualMemory(MP_WINDOWS_CURRENT_PROCESS_HANDLE, 1, &entries, 0);
+}
+
 #elif defined(MP_TARGET_LINUX)
 
 static int mmap_protection;
@@ -1119,23 +1127,29 @@ MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
 	uint8_t* r = (uint8_t*)MP_ALIGN_FLOOR_MASK((size_t)tmp, chunk_size_mask);
 	uint8_t* r_limit = base + chunk_size;
 	MP_LIKELY_IF(tmp != r)
-		munmap(tmp, r - tmp);
+		(void)munmap(tmp, r - tmp);
 	MP_LIKELY_IF(tmp_limit != r_limit)
-		munmap(base_limit, tmp_limit - r_limit);
+		(void)munmap(base_limit, tmp_limit - r_limit);
 	return base;
 }
 
 MP_INLINE_ALWAYS static void mp_os_free(void* ptr, size_t size)
 {
 	MP_INVARIANT(ptr != NULL);
-	munmap(ptr, size);
+	(void)munmap(ptr, size);
 }
 
 MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 {
 	MP_INVARIANT(ptr != NULL);
-	madvise(ptr, size, MADV_DONTNEED);
+	(void)madvise(ptr, size, MADV_DONTNEED);
 }
+
+MP_INLINE_ALWAYS static void mp_os_prefetch_pages(void* ptr, size_t size)
+{
+	(void)madvise(ptr, size, MADV_WILLNEED);
+}
+
 #endif
 
 #ifndef MP_NO_CUSTOM_BACKEND
@@ -1179,6 +1193,9 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop(mp_wcas_list* head)
 		r = prior.head;
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
+#ifdef MP_64BIT
+		MP_PREFETCH(r);
+#endif
 		desired.head = r->next;
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_REL(head, &prior, &desired))
@@ -1196,6 +1213,9 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 		r = prior.head;
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
+#ifdef MP_64BIT
+		MP_PREFETCH(r);
+#endif
 		desired.head = r->next;
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_REL(head, &prior, &desired))
@@ -1330,6 +1350,9 @@ MP_INLINE_ALWAYS static mp_tcache* mp_tcache_acquire_fast()
 		MP_ATOMIC_ACQUIRE_FENCE;
 		MP_UNLIKELY_IF(prior.head == NULL)
 			return NULL;
+#ifdef MP_64BIT
+		MP_PREFETCH(prior.head);
+#endif
 		desired.head = prior.head->next;
 		desired.generation = prior.generation + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_ACQ(&tcache_freelist, &prior, &desired))
@@ -1408,13 +1431,15 @@ MP_INLINE_ALWAYS static void mp_rcache_init()
 
 MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocator, uint_fast8_t sc, struct mp_tcache* owner, void* buffer)
 {
+	uint_fast8_t block_size_log2;
 	uint_fast32_t mask_count, bit_count;
+	block_size_log2 = mp_sc_to_size_large_log2(sc);
 	mp_zero_fill_block_allocator_marked_map((void*)allocator->marked_map);
-	MP_PREFETCH(buffer);
+	mp_os_prefetch_pages(buffer, 1U << block_size_log2);
 	MP_INVARIANT(allocator != NULL);
 	MP_INVARIANT(buffer != NULL);
 	allocator->next = NULL;
-	allocator->free_count = 1U << (chunk_size_log2 - mp_sc_to_size_large_log2(sc));
+	allocator->free_count = 1U << (chunk_size_log2 - block_size_log2);
 	allocator->size_class = sc;
 	allocator->owner = owner;
 	allocator->buffer = (uint8_t*)buffer;
