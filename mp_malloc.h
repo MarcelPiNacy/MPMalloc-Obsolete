@@ -558,10 +558,10 @@ static_assert((MP_REDZONE_SIZE & ((UINTMAX_C(1) << MP_PTR_SIZE_LOG2) - UINTMAX_C
 #ifdef MP_CLANG_OR_GCC
 #define MP_ATOMIC(TYPE) TYPE volatile
 typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
-#define MP_ATOMIC_TEST_ACQ(WHERE)								__atomic_load_n((mp_atomic_bool*)(WHERE), __ATOMIC_ACQUIRE)
+#define MP_ATOMIC_TEST_ACQ(WHERE)								__atomic_load_n((const mp_atomic_bool*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_TAS_ACQ(WHERE)								__atomic_test_and_set((mp_atomic_bool*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_CLEAR_REL(WHERE)								__atomic_clear((mp_atomic_bool*)(WHERE), __ATOMIC_RELEASE)
-#define MP_ATOMIC_LOAD_ACQ_UPTR(WHERE)							__atomic_load_n((mp_atomic_size_t*)(WHERE), __ATOMIC_ACQUIRE)
+#define MP_ATOMIC_LOAD_ACQ_UPTR(WHERE)							__atomic_load_n((const mp_atomic_size_t*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_STORE_REL_UPTR(WHERE, VALUE)					__atomic_store_n((mp_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_RELEASE)
 #define MP_ATOMIC_XCHG_ACQ_UPTR(WHERE, VALUE)					__atomic_exchange_n((mp_atomic_size_t*)(WHERE), (size_t)(VALUE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_CMPXCHG_ACQ_UPTR(WHERE, EXPECTED, VALUE)		__atomic_compare_exchange_n((mp_atomic_size_t*)(WHERE), (size_t*)(EXPECTED), (size_t)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
@@ -575,14 +575,13 @@ typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
 #define MP_ATOMIC_BIT_SET_REL(WHERE, VALUE)						(void)__atomic_fetch_or((mp_atomic_size_t*)(WHERE), (size_t)1 << (uint_fast8_t)(VALUE), __ATOMIC_RELEASE)
 #define MP_ATOMIC_ACQUIRE_FENCE									__atomic_thread_fence(__ATOMIC_ACQUIRE)
 #ifdef MP_32BIT
-#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						*((int64_t*)&(TARGET)) = __atomic_load_n((volatile int64_t*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile int64_t*)(WHERE), (int64_t*)(EXPECTED), *(const int64_t*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile int64_t*)(WHERE), (int64_t*)(EXPECTED), *(const int64_t*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #else
-#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						*((__int128*)&(TARGET)) = __atomic_load_n((volatile __int128*)(WHERE), __ATOMIC_ACQUIRE)
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)			__atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #endif
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)						(void)memcpy(&(TARGET), (const void*)(WHERE), 16); __atomic_thread_fence(__ATOMIC_ACQUIRE)
 #elif defined(MP_MSVC)
 // I'd like to give special thanks to the visual studio dev team for being more than 10 years ahead of the competition in not adding support to the C11 standard to their compiler.
 #define MP_ATOMIC(TYPE) TYPE volatile
@@ -1908,15 +1907,17 @@ static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fa
 	void* r;
 	mp_block_allocator_intrusive** bin;
 	mp_block_allocator_intrusive* allocator;
+	mp_wcas_list* recovered;
 	uint_fast8_t sc;
 	sc = mp_size_to_sc(size);
 	MP_INVARIANT(sc < tcache_small_sc_count);
 	bin = tcache->bins + sc;
 	MP_UNLIKELY_IF(*bin == NULL)
 	{
-		MP_ATOMIC_WLOAD_ACQ(tcache->recovered_small + sc, rhead);
+		recovered = tcache->recovered_small + sc;
+		MP_ATOMIC_WLOAD_ACQ(recovered, rhead);
 		MP_UNLIKELY_IF(rhead.head != NULL)
-			*bin = (mp_block_allocator_intrusive*)mp_wcas_list_pop_all(tcache->recovered_small + sc);
+			*bin = (mp_block_allocator_intrusive*)mp_wcas_list_pop_all(recovered);
 	}
 	allocator = *bin;
 	MP_UNLIKELY_IF(allocator == NULL)
@@ -1964,6 +1965,7 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 	void* r;
 	mp_block_allocator** bin;
 	mp_block_allocator* allocator;
+	mp_wcas_list* recovered;
 	uint_fast8_t sc, bin_index;
 	sc = mp_size_to_sc(size);
 	bin_index = mp_sc_large_bin_index(sc);
@@ -1971,9 +1973,10 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 	bin = tcache->bins_large + bin_index;
 	MP_UNLIKELY_IF(*bin == NULL)
 	{
-		MP_ATOMIC_WLOAD_ACQ(tcache->recovered_large + bin_index, rhead);
+		recovered = tcache->recovered_large + bin_index;
+		MP_ATOMIC_WLOAD_ACQ(recovered, rhead);
 		MP_UNLIKELY_IF(rhead.head != NULL)
-			*bin = (mp_block_allocator*)mp_wcas_list_pop_all(tcache->recovered_large + bin_index);
+			*bin = (mp_block_allocator*)mp_wcas_list_pop_all(recovered);
 	}
 	allocator = *bin;
 	MP_UNLIKELY_IF(allocator == NULL)
@@ -2449,7 +2452,7 @@ MP_ATTR mp_bool MP_CALL mp_debug_validate_memory(const void* ptr, size_t size)
 {
 	mp_block_allocator* allocator;
 	mp_block_allocator_intrusive* intrusive_allocator;
-	size_t k, n;
+	size_t n;
 	MP_UNLIKELY_IF(mp_debug_overflow_check(ptr, size))
 		return MP_FALSE;
 	size = mp_round_size(MP_SIZE_WITH_REDZONE(size));
