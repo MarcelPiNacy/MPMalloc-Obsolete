@@ -66,9 +66,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include <unordered_set>
-inline std::unordered_set<void*> allocators;
-
 #ifdef __linux__
 #define MP_TARGET_LINUX
 #elif defined(_WIN32)
@@ -503,7 +500,7 @@ namespace mp
 #ifdef MP_DEBUG
 #include <assert.h>
 #include <stdlib.h>
-#define MP_INVARIANT(EXPRESSION) MP_UNLIKELY_IF(!(EXPRESSION)) { DebugBreak(); assert((EXPRESSION)); }
+#define MP_INVARIANT(EXPRESSION) assert(EXPRESSION)
 #define MP_UNREACHABLE abort()
 #else
 #define MP_INVARIANT(EXPRESSION) MP_ASSUME((EXPRESSION))
@@ -671,6 +668,12 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 #define MP_PTRS_PER_QWORD (8 / MP_PTR_SIZE)
 #define MP_PTRS_PER_DWORD (4 / MP_PTR_SIZE)
 
+#ifdef MP_DEBUG
+#define MP_JUNKPTR_CHECK(PTR) MP_INVARIANT(memcmp(&(PTR), &junkptr, MP_PTR_SIZE) != 0)
+#else
+#define MP_JUNKPTR_CHECK(PTR)
+#endif
+
 // ================================================================
 //	MISCELLANEOUS
 // ================================================================
@@ -824,8 +827,8 @@ typedef struct mp_tcache_stats
 typedef struct mp_tcache
 {
 	MP_SHARED_ATTR mp_block_allocator_intrusive** bins;
-	mp_wcas_list* recovered_small;
 	mp_block_allocator** bins_large;
+	mp_wcas_list* recovered_small;
 	mp_wcas_list* recovered_large;
 	struct mp_tcache* next;
 	mp_tcache_stats stats;
@@ -859,6 +862,7 @@ static uint8_t tcache_large_sc_count;
 static mp_bool mp_init_flag;
 #endif
 #ifdef MP_DEBUG
+static void* junkptr;
 static mp_debug_options debugger;
 static mp_bool mp_debug_enabled_flag;
 #endif
@@ -1164,11 +1168,12 @@ static mp_fn_purge backend_purge = mp_os_purge;
 #endif
 
 // ================================================================
-//	LOCK-FREE FREE-LIST
+//	CMPXCHG16B-BASED LOCK-FREE FREE-LIST
 // ================================================================
 
 MP_INLINE_ALWAYS static void mp_wcas_list_push(mp_wcas_list* head, void* ptr)
 {
+	MP_JUNKPTR_CHECK(ptr);
 	mp_flist_node* new_head;
 	mp_wcas_list_head prior, desired;
 	new_head = (mp_flist_node*)ptr;
@@ -1176,6 +1181,7 @@ MP_INLINE_ALWAYS static void mp_wcas_list_push(mp_wcas_list* head, void* ptr)
 	MP_SPIN_LOOP
 	{
 		MP_ATOMIC_WLOAD_ACQ(head, prior);
+		MP_JUNKPTR_CHECK(prior.head);
 		new_head->next = prior.head;
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_ACQ(head, &prior, &desired))
@@ -1193,6 +1199,7 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop(mp_wcas_list* head)
 		r = prior.head;
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
+		MP_JUNKPTR_CHECK(r);
 #ifdef MP_64BIT
 		MP_PREFETCH(r);
 #endif
@@ -1213,6 +1220,7 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 		r = prior.head;
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
+		MP_JUNKPTR_CHECK(r);
 #ifdef MP_64BIT
 		MP_PREFETCH(r);
 #endif
@@ -1229,6 +1237,7 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 
 MP_INLINE_ALWAYS static void mp_chunk_list_push(mp_chunk_list* head, void* ptr)
 {
+	MP_JUNKPTR_CHECK(ptr);
 #ifndef MP_STRICT_CHUNK_FREELIST
 	mp_flist_node* new_head;
 	mp_chunk_list_head prior, desired;
@@ -1237,6 +1246,7 @@ MP_INLINE_ALWAYS static void mp_chunk_list_push(mp_chunk_list* head, void* ptr)
 	{
 		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
 		new_head->next = (mp_flist_node*)(prior & ~chunk_size_mask);
+		MP_JUNKPTR_CHECK(new_head->next);
 		desired = (size_t)new_head | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
 		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_REL_UPTR(head, &prior, desired))
 			break;
@@ -1257,6 +1267,7 @@ MP_INLINE_ALWAYS static void* mp_chunk_list_pop(mp_chunk_list* head)
 		r = (mp_flist_node*)(prior & ~chunk_size_mask);
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
+		MP_JUNKPTR_CHECK(r);
 		desired = (size_t)r->next | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
 		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_ACQ_UPTR(head, &prior, desired))
 			return r;
@@ -1350,6 +1361,7 @@ MP_INLINE_ALWAYS static mp_tcache* mp_tcache_acquire_fast()
 		MP_ATOMIC_ACQUIRE_FENCE;
 		MP_UNLIKELY_IF(prior.head == NULL)
 			return NULL;
+		MP_JUNKPTR_CHECK(prior.head);
 #ifdef MP_64BIT
 		MP_PREFETCH(prior.head);
 #endif
@@ -1366,7 +1378,7 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 	mp_tcache* r;
 	uint8_t* buffer;
 	size_t buffer_size;
-	buffer_size = sizeof(mp_tcache) + (size_t)(tcache_small_sc_count + tcache_large_sc_count) * (MP_PTR_SIZE + sizeof(mp_wcas_list));
+	buffer_size = sizeof(mp_tcache) + (size_t)tcache_small_sc_count * (MP_PTR_SIZE + sizeof(mp_wcas_list)) + tcache_large_sc_count * (MP_PTR_SIZE + sizeof(mp_wcas_list));
 	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, buffer_size);
 	MP_INVARIANT(buffer != NULL);
 #if defined(MP_DEBUG) || !defined(MP_NO_CUSTOM_BACKEND)
@@ -2056,13 +2068,16 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 	chunk_size = page_size * MP_CACHE_LINE_SIZE * 8;
 	large_page_size = gethugepagesize();
 #endif
+#ifdef MP_DEBUG
+	(void)memset(&junkptr, MP_JUNK_VALUE, MP_PTR_SIZE);
+#endif
 	chunk_size_mask = chunk_size - 1;
 	page_size_log2 = MP_FLOOR_LOG2(page_size);
 	chunk_size_log2 = MP_FLOOR_LOG2(chunk_size);
-	tcache_small_sc_count = MP_SIZE_CLASS_COUNT + page_size_log2;
-	tcache_large_sc_count = chunk_size_log2 - page_size_log2 - 2;
 	MP_INVARIANT(page_size_log2 >= 12);
 	MP_INVARIANT(chunk_size_log2 >= 20);
+	tcache_small_sc_count = MP_SIZE_CLASS_COUNT + 1 + (page_size_log2 - 12);
+	tcache_large_sc_count = chunk_size_log2 - (page_size_log2 + 1);
 	for (n = i = 0; i != MP_SIZE_MAP_MAX_LOG2; ++i)
 	{
 		MP_SIZE_MAP_OFFSETS[i] = n;
