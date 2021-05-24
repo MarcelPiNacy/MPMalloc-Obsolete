@@ -348,10 +348,6 @@ namespace mp
 #define MP_SIZE_WITH_REDZONE(K) (K)
 #endif
 
-#ifdef __cplusplus
-#define MP_ALIGNAS(SIZE) alignas((SIZE))
-#endif
-
 #ifdef MP_DEBUG
 #define MP_DEBUG_JUNK_FILL(P, K) MP_UNLIKELY_IF((P) != NULL) (void)memset((P), MP_JUNK_VALUE, (K))
 #else
@@ -362,6 +358,7 @@ namespace mp
 #define MP_ALIGN_CEIL_MASK(VALUE, MASK) ((VALUE + (MASK)) & ~(MASK))
 #define MP_ALIGN_FLOOR(VALUE, ALIGNMENT) MP_ALIGN_FLOOR_MASK(VALUE, (ALIGNMENT) - 1)
 #define MP_ALIGN_CEIL(VALUE, ALIGNMENT) MP_ALIGN_CEIL_MASK(VALUE, (ALIGNMENT) - 1)
+#define MP_IS_ALIGNED(PTR, ALIGNMENT) ((((size_t)(PTR)) & (((size_t)(ALIGNMENT)) - (size_t)1)) == 0)
 
 #ifdef MP_TARGET_LINUX
 #include <unistd.h>
@@ -391,9 +388,7 @@ namespace mp
 #else
 #define MP_SPIN_WAIT
 #endif
-#ifndef __cplusplus
 #define MP_ALIGNAS(SIZE) __attribute__((aligned((SIZE))))
-#endif
 #define MP_TLS __thread
 #define MP_PURE __attribute__((pure))
 #define MP_ULTRAPURE __attribute__((const))
@@ -447,9 +442,7 @@ namespace mp
 #define MP_SPIN_WAIT
 #define MP_PREFETCH(PTR)
 #endif
-#ifndef __cplusplus
 #define MP_ALIGNAS(SIZE) __declspec(align(SIZE))
-#endif
 #define MP_TLS __declspec(thread)
 #define MP_PURE __declspec(noalias)
 #define MP_ULTRAPURE MP_PURE
@@ -619,33 +612,31 @@ typedef volatile mp_msvc_size_t mp_msvc_atomic_size_t;
 #define MP_ATOMIC_BIT_SET_REL(WHERE, VALUE) (void)MP_MSVC_ATOMIC_REL(_interlockedbittestandset)((mp_msvc_atomic_size_t*)(WHERE), (uint_fast8_t)(VALUE))
 #define MP_ATOMIC_ACQUIRE_FENCE _ReadBarrier()
 
-typedef struct mp_msvc_uintptr_pair { MP_ALIGNAS(MP_DPTR_SIZE) size_t a, b; } mp_msvc_uintptr_pair;
+typedef struct mp_msvc_uintptr_pair { MP_ALIGNAS(MP_DPTR_SIZE) size_t a; size_t b; } mp_msvc_uintptr_pair;
 
-MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_acq(volatile mp_msvc_uintptr_pair* where, const mp_msvc_uintptr_pair* expected, const mp_msvc_uintptr_pair* desired)
+MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_acq(volatile mp_msvc_uintptr_pair* where, mp_msvc_uintptr_pair* expected, const mp_msvc_uintptr_pair* desired)
 {
+	MP_INVARIANT(MP_IS_ALIGNED(where, MP_DPTR_SIZE));
 #ifdef MP_32BIT
 	return MP_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(_InterlockedCompareExchange64)((volatile LONG64*)where, *(const LONG64*)desired, *(const LONG64*)expected) == *(const LONG64*)expected;
 #else
-	mp_msvc_uintptr_pair tmp;
-	(void)memcpy(&tmp, expected, 16);
-	return (mp_bool)MP_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, desired->b, desired->b, (LONG64*)&tmp);
+	return (mp_bool)MP_MSVC_ATOMIC_ACQUIRE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, desired->b, desired->a, (LONG64*)expected);
 #endif
 }
 
-MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_pair* where, const mp_msvc_uintptr_pair* expected, const mp_msvc_uintptr_pair* desired)
+MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_pair* where, mp_msvc_uintptr_pair* expected, const mp_msvc_uintptr_pair* desired)
 {
+	MP_INVARIANT(MP_IS_ALIGNED(where, MP_DPTR_SIZE));
 #ifdef MP_32BIT
 	return MP_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(_InterlockedCompareExchange64)((volatile LONG64*)where, *(const LONG64*)desired, *(const LONG64*)expected) == *(const LONG64*)expected;
 #else
-	mp_msvc_uintptr_pair tmp;
-	(void)memcpy(&tmp, expected, 16);
-	return (mp_bool)MP_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, desired->b, desired->b, (LONG64*)&tmp);
+	return (mp_bool)MP_MSVC_ATOMIC_RELEASE_FENCE_SUFFIX(_InterlockedCompareExchange128)((volatile LONG64*)where, desired->b, desired->a, (LONG64*)expected);
 #endif
 }
 
-#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)				(void)memcpy(&(TARGET), (const void*)(WHERE), sizeof((TARGET))); MP_ATOMIC_ACQUIRE_FENCE
-#define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_acq((volatile mp_msvc_uintptr_pair*)(WHERE), (const mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
-#define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_rel((volatile mp_msvc_uintptr_pair*)(WHERE), (const mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET)				MP_INVARIANT(MP_IS_ALIGNED((WHERE), MP_DPTR_SIZE)); (void)memcpy((void*)&(TARGET), (const void*)(WHERE), MP_DPTR_SIZE); MP_ATOMIC_ACQUIRE_FENCE
+#define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_acq((volatile mp_msvc_uintptr_pair*)(WHERE), (mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
+#define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_rel((volatile mp_msvc_uintptr_pair*)(WHERE), (mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
 #endif
 
 #define MP_ATOMIC_LOAD_ACQ_PTR(WHERE) (void*)MP_ATOMIC_LOAD_ACQ_UPTR((mp_atomic_size_t*)WHERE)
@@ -1210,7 +1201,7 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop(mp_wcas_list* head)
 	}
 }
 
-MP_INLINE_ALWAYS static void* mp_wcas_list_pop_all(mp_wcas_list* head)
+MP_INLINE_NEVER static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 {
 	mp_flist_node* r;
 	mp_wcas_list_head prior, desired;
@@ -1224,7 +1215,7 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 #ifdef MP_64BIT
 		MP_PREFETCH(r);
 #endif
-		desired.head = r->next;
+		desired.head = NULL;
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_REL(head, &prior, &desired))
 			return r;
@@ -1378,7 +1369,9 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 	mp_tcache* r;
 	uint8_t* buffer;
 	size_t buffer_size;
-	buffer_size = sizeof(mp_tcache) + (size_t)tcache_small_sc_count * (MP_PTR_SIZE + sizeof(mp_wcas_list)) + tcache_large_sc_count * (MP_PTR_SIZE + sizeof(mp_wcas_list));
+	buffer_size =
+		MP_ALIGN_CEIL(sizeof(mp_tcache) + (size_t)tcache_small_sc_count * (MP_PTR_SIZE + sizeof(mp_wcas_list)), MP_CACHE_LINE_SIZE) +
+		MP_ALIGN_CEIL(tcache_large_sc_count * (MP_PTR_SIZE + sizeof(mp_wcas_list)), MP_CACHE_LINE_SIZE);
 	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, buffer_size);
 	MP_INVARIANT(buffer != NULL);
 #if defined(MP_DEBUG) || !defined(MP_NO_CUSTOM_BACKEND)
@@ -1389,9 +1382,9 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 	r->bins = (mp_block_allocator_intrusive**)buffer;
 	buffer = (uint8_t*)(r->bins + tcache_small_sc_count);
 	r->bins_large = (mp_block_allocator**)buffer;
-	buffer = (uint8_t*)(r->bins_large + tcache_large_sc_count);
+	buffer = (uint8_t*)MP_ALIGN_CEIL((size_t)(r->bins_large + tcache_large_sc_count), MP_DPTR_SIZE);
 	r->recovered_small = (mp_wcas_list*)buffer;
-	buffer = (uint8_t*)(r->recovered_small + tcache_small_sc_count);
+	buffer = (uint8_t*)MP_ALIGN_CEIL((size_t)(r->recovered_small + tcache_small_sc_count), MP_DPTR_SIZE);
 	r->recovered_large = (mp_wcas_list*)buffer;
 	return r;
 }
@@ -1447,7 +1440,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocat
 	uint_fast32_t mask_count, bit_count;
 	block_size_log2 = mp_sc_to_size_large_log2(sc);
 	mp_zero_fill_block_allocator_marked_map((void*)allocator->marked_map);
-	mp_os_prefetch_pages(buffer, 1U << block_size_log2);
+	mp_os_prefetch_pages(buffer, (size_t)1 << block_size_log2);
 	MP_INVARIANT(allocator != NULL);
 	MP_INVARIANT(buffer != NULL);
 	allocator->next = NULL;
@@ -2035,15 +2028,28 @@ Fallback:
 MP_INLINE_ALWAYS static void mp_this_tcache_check_integrity()
 {
 #ifdef MP_DEBUG
-	mp_block_allocator_intrusive* intrusive_allocator;
+	mp_block_allocator_intrusive* allocator_intrusive;
 	mp_block_allocator* allocator;
+	mp_wcas_list rhead;
 	size_t i;
 	for (i = 0; i != tcache_small_sc_count; ++i)
-		for (intrusive_allocator = this_tcache->bins[i]; intrusive_allocator != NULL; intrusive_allocator = intrusive_allocator->next)
-			MP_INVARIANT(mp_is_valid_block_allocator_intrusive(intrusive_allocator));
-	for (i = 0; i != chunk_size_log2 - page_size_log2 - 2; ++i)
+		for (allocator_intrusive = this_tcache->bins[i]; allocator_intrusive != NULL; allocator_intrusive = allocator_intrusive->next)
+			MP_INVARIANT(mp_is_valid_block_allocator_intrusive(allocator_intrusive));
+	for (i = 0; i != tcache_large_sc_count; ++i)
 		for (allocator = this_tcache->bins_large[i]; allocator != NULL; allocator = allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator(allocator));
+	for (i = 0; i != tcache_small_sc_count; ++i)
+	{
+		MP_ATOMIC_WLOAD_ACQ(this_tcache->recovered_small + i, rhead);
+		for (allocator_intrusive = (mp_block_allocator_intrusive*)rhead.head; allocator_intrusive != NULL; allocator_intrusive = allocator_intrusive->next)
+			MP_INVARIANT(mp_is_valid_block_allocator_intrusive(allocator_intrusive));
+	}
+	for (i = 0; i != tcache_large_sc_count; ++i)
+	{
+		MP_ATOMIC_WLOAD_ACQ(this_tcache->recovered_large + i, rhead);
+		for (allocator = (mp_block_allocator*)rhead.head; allocator != NULL; allocator = allocator->next)
+			MP_INVARIANT(mp_is_valid_block_allocator(allocator));
+	}
 #endif
 }
 
@@ -2244,7 +2250,7 @@ MP_ATTR mp_bool MP_CALL mp_tcache_resize(void* ptr, size_t old_size, size_t new_
 MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
 {
 	MP_INVARIANT(ptr != NULL);
-	mp_block_allocator_intrusive* intrusive_allocator;
+	mp_block_allocator_intrusive* allocator_intrusive;
 	mp_block_allocator* allocator;
 	size_t k;
 	mp_this_tcache_check_integrity();
@@ -2252,11 +2258,11 @@ MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
 	MP_LIKELY_IF(size <= page_size)
 	{
 		k = mp_chunk_size_of(size);
-		intrusive_allocator = (mp_block_allocator_intrusive*)MP_ALIGN_FLOOR((size_t)ptr, k);
-		MP_LIKELY_IF(intrusive_allocator->owner == this_tcache)
-			mp_block_allocator_intrusive_free(intrusive_allocator, ptr);
+		allocator_intrusive = (mp_block_allocator_intrusive*)MP_ALIGN_FLOOR((size_t)ptr, k);
+		MP_LIKELY_IF(allocator_intrusive->owner == this_tcache)
+			mp_block_allocator_intrusive_free(allocator_intrusive, ptr);
 		else
-			mp_block_allocator_intrusive_free_shared(intrusive_allocator, ptr);
+			mp_block_allocator_intrusive_free_shared(allocator_intrusive, ptr);
 	}
 	else
 	{
@@ -2491,7 +2497,7 @@ MP_ATTR void MP_CALL mp_debug_error(const char* message, size_t size)
 MP_ATTR mp_bool MP_CALL mp_debug_validate_memory(const void* ptr, size_t size)
 {
 	mp_block_allocator* allocator;
-	mp_block_allocator_intrusive* intrusive_allocator;
+	mp_block_allocator_intrusive* allocator_intrusive;
 	size_t n;
 	MP_UNLIKELY_IF(mp_debug_overflow_check(ptr, size))
 		return MP_FALSE;
@@ -2501,8 +2507,8 @@ MP_ATTR mp_bool MP_CALL mp_debug_validate_memory(const void* ptr, size_t size)
 	if (size < page_size)
 	{
 		n = mp_chunk_size_of(size);
-		intrusive_allocator = (mp_block_allocator_intrusive*)MP_ALIGN_FLOOR((size_t)ptr, n);
-		return mp_is_valid_block_allocator_intrusive(intrusive_allocator);
+		allocator_intrusive = (mp_block_allocator_intrusive*)MP_ALIGN_FLOOR((size_t)ptr, n);
+		return mp_is_valid_block_allocator_intrusive(allocator_intrusive);
 	}
 	else
 	{
