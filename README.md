@@ -67,11 +67,10 @@ mp_bool		mp_debug_overflow_check(const void* ptr, size_t size);
 ```
 
 ## TODO
-- Fix ABA issue with recover_list's push function.
 - Add a way to return unused block allocators (chunks) from the local TCache to the LCache.
 - Give more options for malloc/free.
 - Add support for aligned allocation.
 - Add a mechanism for returning physical memory to the OS, via DiscardVirtualMemory/madvise.
 - Add a mechanism for returning virtual memory addresses to the OS, via VirtualFree/munmap.  
 - (Optional) Since small allocations rely on bitmask allocators, attempt to compact memory using a similar system to Emery Berger's MESH.
-- (Optional) Attempt to achieve wait-freedom for certain cases.
+- (Optional) Attempt to achieve wait-freedom for certain free-list types.
