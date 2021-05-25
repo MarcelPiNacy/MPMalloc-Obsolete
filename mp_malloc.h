@@ -776,6 +776,7 @@ typedef struct mp_tcache
 	mp_wcas_list* recovered_large;
 	struct mp_tcache* next;
 	mp_tcache_stats stats;
+	mp_atomic_bool is_active;
 } mp_tcache;
 
 static MP_TLS mp_tcache* this_tcache;
@@ -2127,9 +2128,26 @@ MP_ATTR mp_bool MP_CALL mp_thread_enabled()
 
 MP_ATTR void MP_CALL mp_thread_cleanup()
 {
+	mp_block_allocator* allocator;
+	mp_block_allocator_intrusive* allocator_intrusive;
 	MP_INVARIANT(this_tcache != NULL);
+	MP_ATOMIC_CLEAR_REL(&this_tcache->is_active);
 	mp_tcache_release(this_tcache);
 	this_tcache = NULL;
+	/*
+	for (i = 0; i != tcache_small_sc_count; ++i)
+		for (allocator_intrusive = (mp_block_allocator_intrusive*)mp_wcas_list_pop_all(this_tcache->recovered_small + i); allocator_intrusive != NULL; allocator_intrusive = allocator_intrusive->next)
+			mp_wcas_list_push(rcache_small + i, allocator_intrusive);
+	for (i = 0; i != tcache_large_sc_count; ++i)
+		for (allocator = (mp_block_allocator*)mp_wcas_list_pop_all(this_tcache->recovered_large + i); allocator != NULL; allocator = allocator->next)
+			mp_wcas_list_push(rcache_large + i, allocator);
+	for (i = 0; i != tcache_small_sc_count; ++i)
+		for (allocator_intrusive = this_tcache->bins[i]; allocator_intrusive != NULL; allocator_intrusive = allocator_intrusive->next)
+			mp_wcas_list_push(rcache_small + i, allocator_intrusive);
+	for (i = 0; i != tcache_large_sc_count; ++i)
+		for (allocator = this_tcache->bins_large[i]; allocator != NULL; allocator = allocator->next)
+			mp_wcas_list_push(rcache_large + i, allocator);
+	*/
 }
 
 MP_ATTR void* MP_CALL mp_malloc(size_t size)
