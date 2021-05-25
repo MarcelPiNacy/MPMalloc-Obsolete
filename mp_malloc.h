@@ -253,68 +253,6 @@ MP_ATTR mp_bool				MP_CALL mp_debug_validate_memory(const void* ptr, size_t size
 MP_ATTR mp_bool				MP_CALL mp_debug_overflow_check(const void* ptr, size_t size);
 MP_EXTERN_C_END
 
-#if defined(__cplusplus) && defined(MP_CXX_API)
-namespace mp
-{
-	using init_options = mp_init_options;
-	using memory_stats = mp_heap_stats;
-	using trim_options = mp_trim_options;
-	using debug_options = mp_debug_options;
-
-	MP_ATTR void			MP_CALL init(const mp_init_options* options) noexcept { return mp_init(options); }
-	MP_ATTR void			MP_CALL init() noexcept { return mp_init_default(); }
-	MP_ATTR void			MP_CALL cleanup() noexcept { mp_cleanup(); }
-	MP_ATTR void*			MP_CALL malloc(size_t size) noexcept { return mp_malloc(size); }
-	MP_ATTR bool			MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_resize(ptr, old_size, new_size); }
-	MP_ATTR void*			MP_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_realloc(ptr, old_size, new_size); }
-	MP_ATTR void			MP_CALL free(void* ptr, size_t size) noexcept { mp_free(ptr, size); }
-	MP_ATTR size_t			MP_CALL round_size(size_t size) noexcept { return mp_round_size(size); }
-
-	namespace thread_cache
-	{
-		MP_ATTR void*		MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_tcache_malloc(size, flags); }
-		MP_ATTR bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags) noexcept { return mp_tcache_resize(ptr, old_size, new_size, flags); }
-		MP_ATTR void		MP_CALL free(void* ptr, size_t size) noexcept { mp_tcache_free(ptr, size); }
-		MP_ATTR size_t		MP_CALL round_size(size_t size) noexcept { return mp_tcache_round_size(size); }
-		MP_ATTR size_t		MP_CALL min_size() noexcept { return mp_tcache_min_size(); }
-		MP_ATTR size_t		MP_CALL max_size() noexcept { return mp_tcache_max_size(); }
-	}
-
-	namespace large_cache
-	{
-		MP_ATTR void*		MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_lcache_malloc(size, flags); }
-		MP_ATTR bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags) noexcept { return mp_lcache_resize(ptr, old_size, new_size, flags); }
-		MP_ATTR void		MP_CALL free(void* ptr, size_t size) noexcept { mp_lcache_free(ptr, size); }
-		MP_ATTR size_t		MP_CALL round_size(size_t size) noexcept { return mp_lcache_round_size(size); }
-		MP_ATTR size_t		MP_CALL min_size() noexcept { return mp_lcache_min_size(); }
-		MP_ATTR size_t		MP_CALL max_size() noexcept { return mp_lcache_max_size(); }
-	}
-
-	namespace persistent
-	{
-		MP_ATTR void*		MP_CALL malloc(size_t size) noexcept { return mp_persistent_malloc(size); }
-		MP_ATTR void		MP_CALL cleanup() noexcept { mp_persistent_cleanup(); }
-	}
-
-	namespace backend
-	{
-		MP_ATTR size_t		MP_CALL required_alignment() noexcept { return mp_backend_required_alignment(); }
-		MP_ATTR void*		MP_CALL malloc(size_t size) noexcept { return mp_backend_malloc(size); }
-		MP_ATTR bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_backend_resize(ptr, old_size, new_size); }
-		MP_ATTR void		MP_CALL free(void* ptr, size_t size) noexcept { return mp_backend_free(ptr, size); }
-	}
-
-	namespace debugger
-	{
-		MP_ATTR void		MP_CALL init(const debug_options* options) noexcept { return mp_debug_init((const mp_debug_options*)options); }
-		MP_ATTR bool		MP_CALL enabled() noexcept { return mp_debug_enabled(); }
-		MP_ATTR void		MP_CALL message(const char* message, size_t size) noexcept { return mp_debug_message(message, size); }
-		MP_ATTR void		MP_CALL warning(const char* message, size_t size) noexcept { return mp_debug_warning(message, size); }
-		MP_ATTR void		MP_CALL error(const char* message, size_t size) noexcept { return mp_debug_error(message, size); }
-	}
-}
-#endif
-
 
 
 #ifdef MP_IMPLEMENTATION
@@ -878,18 +816,12 @@ static mp_bool mp_debug_enabled_flag;
 //	SIZE CLASS MAPPING FUNCTIONS
 // ================================================================
 
-#ifdef __cplusplus
-#define MP_CONST constexpr
-#else
-#define MP_CONST const
-#endif
-
 #define MP_SIZE_MAP_MAX 4096
 #define MP_SIZE_MAP_MAX_LOG2 12
 #define MP_SIZE_CLASS_COUNT 62
 #define MP_TCACHE_SMALL_BIN_BUFFER_SIZE MP_PTR_SIZE * MP_SIZE_CLASS_COUNT
 
-static MP_CONST uint16_t MP_SIZE_CLASSES[] =
+static const uint16_t MP_SIZE_CLASSES[] =
 {
 	1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64,
 	80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256,
@@ -899,19 +831,19 @@ static MP_CONST uint16_t MP_SIZE_CLASSES[] =
 	2176, 2304, 2560, 2816, 3072, 3328, 3584, 3840, 4096
 };
 
-static MP_CONST uint16_t MP_SIZE_MAP_0[] = { 1 };
-static MP_CONST uint16_t MP_SIZE_MAP_1[] = { 2 };
-static MP_CONST uint16_t MP_SIZE_MAP_2[] = { 4 };
-static MP_CONST uint16_t MP_SIZE_MAP_3[] = { 8, 12 };
-static MP_CONST uint16_t MP_SIZE_MAP_4[] = { 16, 20, 24, 28 };
-static MP_CONST uint16_t MP_SIZE_MAP_5[] = { 32, 40, 48, 56 };
-static MP_CONST uint16_t MP_SIZE_MAP_6[] = { 64, 80, 96, 112 };
-static MP_CONST uint16_t MP_SIZE_MAP_7[] = { 128, 144, 160, 176, 192, 208, 224, 240 };
-static MP_CONST uint16_t MP_SIZE_MAP_8[] = { 256, 272, 288, 304, 320, 352, 384, 416, 448, 480 };
-static MP_CONST uint16_t MP_SIZE_MAP_9[] = { 512, 544, 576, 640, 704, 768, 832, 896, 960 };
-static MP_CONST uint16_t MP_SIZE_MAP_10[] = { 1024, 1088, 1152, 1280, 1408, 1536, 1664, 1792, 1920 };
-static MP_CONST uint16_t MP_SIZE_MAP_11[] = { 2048, 2176, 2304, 2560, 2816, 3072, 3328, 3584, 3840 };
-static MP_CONST uint16_t MP_SIZE_MAP_EXTRA[] = { 4096 };
+static const uint16_t MP_SIZE_MAP_0[] = { 1 };
+static const uint16_t MP_SIZE_MAP_1[] = { 2 };
+static const uint16_t MP_SIZE_MAP_2[] = { 4 };
+static const uint16_t MP_SIZE_MAP_3[] = { 8, 12 };
+static const uint16_t MP_SIZE_MAP_4[] = { 16, 20, 24, 28 };
+static const uint16_t MP_SIZE_MAP_5[] = { 32, 40, 48, 56 };
+static const uint16_t MP_SIZE_MAP_6[] = { 64, 80, 96, 112 };
+static const uint16_t MP_SIZE_MAP_7[] = { 128, 144, 160, 176, 192, 208, 224, 240 };
+static const uint16_t MP_SIZE_MAP_8[] = { 256, 272, 288, 304, 320, 352, 384, 416, 448, 480 };
+static const uint16_t MP_SIZE_MAP_9[] = { 512, 544, 576, 640, 704, 768, 832, 896, 960 };
+static const uint16_t MP_SIZE_MAP_10[] = { 1024, 1088, 1152, 1280, 1408, 1536, 1664, 1792, 1920 };
+static const uint16_t MP_SIZE_MAP_11[] = { 2048, 2176, 2304, 2560, 2816, 3072, 3328, 3584, 3840 };
+static const uint16_t MP_SIZE_MAP_EXTRA[] = { 4096 };
 
 static const uint16_t* const MP_SIZE_MAP[] =
 {
@@ -921,7 +853,7 @@ static const uint16_t* const MP_SIZE_MAP[] =
 	MP_SIZE_MAP_EXTRA
 };
 
-static MP_CONST uint8_t MP_SIZE_MAP_SIZES[MP_SIZE_MAP_MAX_LOG2] =
+static const uint8_t MP_SIZE_MAP_SIZES[MP_SIZE_MAP_MAX_LOG2] =
 {
 	MP_ARRAY_SIZE(MP_SIZE_MAP_0), MP_ARRAY_SIZE(MP_SIZE_MAP_1), MP_ARRAY_SIZE(MP_SIZE_MAP_2), MP_ARRAY_SIZE(MP_SIZE_MAP_3),
 	MP_ARRAY_SIZE(MP_SIZE_MAP_4), MP_ARRAY_SIZE(MP_SIZE_MAP_5), MP_ARRAY_SIZE(MP_SIZE_MAP_6), MP_ARRAY_SIZE(MP_SIZE_MAP_7),
