@@ -55,7 +55,7 @@
 	- MP_STRICT_CHUNK_FREELIST:
 		By default, MPMalloc's lock-free freelist for chunks uses the lower bits of the node pointers as generation counters to avoid ABA issues.
 		Since MPMalloc doesn't support page sizes smaller than 4KiB and cache line sizes smaller than 32 bytes, the minimum chunk size possible is 2^20.
-		This means that unless the number of running threads accessing a single free-list exceeds this value (minus one), ABA issues aren't possible.
+		This means that unless the number of running threads accessing a single free-list exceeds this value (minus one), ABA-related bugs aren't possible.
 		Defining this turns these freelists into CMPXCHG16B-based ones, which is much slower but it's safer.
 		Unless the number of threads can exceed 2^32 or 2^64...
 */
