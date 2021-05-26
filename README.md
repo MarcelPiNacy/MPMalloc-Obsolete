@@ -16,8 +16,8 @@ MPMalloc has been tested on Windows 10. It *should* also work on any Windows ver
 ## API
 
 ```c
-void		mp_init(const mp_init_options* options);
-void		mp_init_default();
+mp_bool		mp_init(const mp_init_options* options);
+mp_bool		mp_init_default();
 mp_bool		mp_enabled();
 void		mp_cleanup();
 void		mp_thread_init();
