@@ -325,13 +325,13 @@ MP_EXTERN_C_END
 #define MP_CLANG_OR_GCC
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
-#define MP_SPIN_WAIT __builtin_ia32_pause()
+#define MP_SPIN_LOOP for (;; __builtin_ia32_pause())
 #elif defined(__arm__)
-#define MP_SPIN_WAIT __yield()
+#define MP_SPIN_LOOP for (;; __yield())
 #elif defined(__POWERPC__)
-#define MP_SPIN_WAIT asm volatile("or 31,31,31")
+#define MP_SPIN_LOOP for (;; asm volatile("or 31,31,31"))
 #else
-#define MP_SPIN_WAIT
+#define MP_SPIN_LOOP for (;;)
 #endif
 #define MP_ALIGNAS(SIZE) __attribute__((aligned((SIZE))))
 #define MP_TLS __thread
@@ -375,16 +375,16 @@ MP_EXTERN_C_END
 #define MP_MSVC
 #include <intrin.h>
 #if defined(_M_X64) || defined(_M_IX86)
-#define MP_SPIN_WAIT _mm_pause()
+#define MP_SPIN_LOOP for (;; _mm_pause())
 #define MP_PREFETCH(PTR) _mm_prefetch((const CHAR*)(PTR), _MM_HINT_T0)
 #elif defined(_M_ARM)
-#define MP_SPIN_WAIT __yield()
+#define MP_SPIN_LOOP for (;; __yield())
 #define MP_PREFETCH(PTR) __prefetch((const CHAR*)(PTR))
 #elif defined(_M_PPC)
-#define MP_SPIN_WAIT
+#define MP_SPIN_LOOP for (;;)
 #define MP_PREFETCH(PTR)
 #else
-#define MP_SPIN_WAIT
+#define MP_SPIN_LOOP for (;;)
 #define MP_PREFETCH(PTR)
 #endif
 #define MP_ALIGNAS(SIZE) __declspec(align(SIZE))
@@ -444,7 +444,6 @@ MP_EXTERN_C_END
 #define MP_INVARIANT(EXPRESSION) MP_ASSUME((EXPRESSION))
 #define MP_UNREACHABLE MP_ASSUME(MP_FALSE)
 #endif
-#define MP_SPIN_LOOP for (;; MP_SPIN_WAIT)
 #define MP_FLOOR_LOG2_32(VALUE) (uint8_t)(31 - MP_CLZ_32(VALUE))
 #define MP_FLOOR_LOG2_64(VALUE) (uint8_t)(63 - MP_CLZ_64(VALUE))
 #define MP_CEIL_LOG2_32(VALUE) (uint8_t)(32 - MP_CLZ_32((VALUE) - 1))
@@ -1972,7 +1971,6 @@ static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size_t size, uint_fa
 	buffer = mp_lcache_malloc(chunk_size, MP_ENABLE_FALLBACK);
 	MP_UNLIKELY_IF(buffer == NULL)
 		return NULL;
-	mp_os_prefetch_pages(buffer, size);
 	allocator = mp_tcache_insert_allocator(buffer);
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
@@ -2128,6 +2126,7 @@ MP_ATTR mp_bool MP_CALL mp_thread_enabled()
 
 MP_ATTR void MP_CALL mp_thread_cleanup()
 {
+	uint_fast8_t i;
 	mp_block_allocator* allocator;
 	mp_block_allocator_intrusive* allocator_intrusive;
 	MP_INVARIANT(this_tcache != NULL);

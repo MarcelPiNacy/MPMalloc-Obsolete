@@ -13,42 +13,42 @@ namespace mp
 	MP_ATTR inline void			MP_CALL cleanup() noexcept { mp_cleanup(); }
 	MP_ATTR inline void			MP_CALL thread_init() noexcept { return mp_thread_init(); }
 	MP_ATTR inline void			MP_CALL thread_cleanup() noexcept { mp_thread_cleanup(); }
-	MP_ATTR inline void*		MP_CALL malloc(size_t size) noexcept { return mp_malloc(size); }
+	MP_ATTR inline void*			MP_CALL malloc(size_t size) noexcept { return mp_malloc(size); }
 	MP_ATTR inline bool			MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_resize(ptr, old_size, new_size); }
-	MP_ATTR inline void*		MP_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_realloc(ptr, old_size, new_size); }
+	MP_ATTR inline void*			MP_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_realloc(ptr, old_size, new_size); }
 	MP_ATTR inline void			MP_CALL free(void* ptr, size_t size) noexcept { mp_free(ptr, size); }
-	MP_ATTR inline size_t		MP_CALL round_size(size_t size) noexcept { return mp_round_size(size); }
+	MP_ATTR inline size_t			MP_CALL round_size(size_t size) noexcept { return mp_round_size(size); }
 
 	namespace thread_cache
 	{
-		MP_ATTR inline void*	MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_tcache_malloc(size, flags); }
+		MP_ATTR inline void*		MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_tcache_malloc(size, flags); }
 		MP_ATTR inline bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags) noexcept { return mp_tcache_resize(ptr, old_size, new_size, flags); }
 		MP_ATTR inline void		MP_CALL free(void* ptr, size_t size) noexcept { mp_tcache_free(ptr, size); }
-		MP_ATTR inline size_t	MP_CALL round_size(size_t size) noexcept { return mp_tcache_round_size(size); }
-		MP_ATTR inline size_t	MP_CALL min_size() noexcept { return mp_tcache_min_size(); }
-		MP_ATTR inline size_t	MP_CALL max_size() noexcept { return mp_tcache_max_size(); }
+		MP_ATTR inline size_t		MP_CALL round_size(size_t size) noexcept { return mp_tcache_round_size(size); }
+		MP_ATTR inline size_t		MP_CALL min_size() noexcept { return mp_tcache_min_size(); }
+		MP_ATTR inline size_t		MP_CALL max_size() noexcept { return mp_tcache_max_size(); }
 	}
 
 	namespace large_cache
 	{
-		MP_ATTR inline void*	MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_lcache_malloc(size, flags); }
+		MP_ATTR inline void*		MP_CALL malloc(size_t size, mp_flags flags) noexcept { return mp_lcache_malloc(size, flags); }
 		MP_ATTR inline bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags) noexcept { return mp_lcache_resize(ptr, old_size, new_size, flags); }
 		MP_ATTR inline void		MP_CALL free(void* ptr, size_t size) noexcept { mp_lcache_free(ptr, size); }
-		MP_ATTR inline size_t	MP_CALL round_size(size_t size) noexcept { return mp_lcache_round_size(size); }
-		MP_ATTR inline size_t	MP_CALL min_size() noexcept { return mp_lcache_min_size(); }
-		MP_ATTR inline size_t	MP_CALL max_size() noexcept { return mp_lcache_max_size(); }
+		MP_ATTR inline size_t		MP_CALL round_size(size_t size) noexcept { return mp_lcache_round_size(size); }
+		MP_ATTR inline size_t		MP_CALL min_size() noexcept { return mp_lcache_min_size(); }
+		MP_ATTR inline size_t		MP_CALL max_size() noexcept { return mp_lcache_max_size(); }
 	}
 
 	namespace persistent
 	{
-		MP_ATTR inline void*	MP_CALL malloc(size_t size) noexcept { return mp_persistent_malloc(size); }
+		MP_ATTR inline void*		MP_CALL malloc(size_t size) noexcept { return mp_persistent_malloc(size); }
 		MP_ATTR inline void		MP_CALL cleanup() noexcept { mp_persistent_cleanup(); }
 	}
 
 	namespace backend
 	{
-		MP_ATTR inline size_t	MP_CALL required_alignment() noexcept { return mp_backend_required_alignment(); }
-		MP_ATTR inline void*	MP_CALL malloc(size_t size) noexcept { return mp_backend_malloc(size); }
+		MP_ATTR inline size_t		MP_CALL required_alignment() noexcept { return mp_backend_required_alignment(); }
+		MP_ATTR inline void*		MP_CALL malloc(size_t size) noexcept { return mp_backend_malloc(size); }
 		MP_ATTR inline bool		MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_backend_resize(ptr, old_size, new_size); }
 		MP_ATTR inline void		MP_CALL free(void* ptr, size_t size) noexcept { return mp_backend_free(ptr, size); }
 	}
