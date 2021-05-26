@@ -145,21 +145,19 @@ typedef _Bool mp_bool;
 MP_EXTERN_C_BEGIN
 typedef enum mp_init_flag_bits
 {
-	MP_INIT_ENABLE_LARGE_PAGES = 63
+	MP_INIT_ENABLE_LARGE_PAGES = 1U << 31
 } mp_init_flag_bits;
-typedef uint64_t mp_init_flags;
+
+typedef uint32_t mp_init_flags;
 
 typedef enum mp_malloc_flag_bits
 {
-	MP_ENABLE_FALLBACK = 1,
+	MP_NO_FALLBACK = 1,
+	MP_NO_SYSCALL = 2,
+	MP_NO_ATOMICS = 4,
 } mp_malloc_flag_bits;
-typedef uint64_t mp_flags;
 
-typedef enum mp_flush_type
-{
-	MP_FLUSH_FULL,
-	MP_FLUSH_EXPONENTIAL,
-} mp_flush_type;
+typedef uint32_t mp_flags;
 
 typedef void(MP_PTR* mp_fn_init)(const struct mp_init_options*);
 typedef void(MP_PTR* mp_fn_cleanup)();
@@ -205,6 +203,12 @@ typedef struct mp_debug_options
 	mp_fn_debug_error error;
 } mp_debug_options;
 
+typedef struct mp_param_list
+{
+	size_t alignment;
+	mp_malloc_flag_bits flags;
+} mp_param_list;
+
 MP_ATTR void				MP_CALL mp_init(const mp_init_options* options);
 MP_ATTR void				MP_CALL mp_init_default();
 MP_ATTR mp_bool				MP_CALL mp_enabled();
@@ -218,6 +222,11 @@ MP_ATTR mp_bool				MP_CALL mp_resize(void* ptr, size_t old_size, size_t new_size
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size);
 MP_ATTR void				MP_CALL mp_free(void* ptr, size_t size);
 MP_ATTR size_t				MP_CALL mp_round_size(size_t size);
+
+//MP_NODISCARD MP_ATTR void*	MP_CALL mp_xmalloc(size_t size, mp_param_list* params, size_t param_count);
+//MP_ATTR mp_bool				MP_CALL mp_xresize(void* ptr, size_t old_size, size_t new_size, mp_param_list* params, size_t param_count);
+//MP_NODISCARD MP_ATTR void*	MP_CALL mp_xrealloc(void* ptr, size_t old_size, size_t new_size, mp_param_list* params, size_t param_count);
+//MP_ATTR void					MP_CALL mp_xfree(void* ptr, size_t size, mp_param_list* params, size_t param_count);
 
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_tcache_malloc(size_t size, mp_flags flags);
 MP_ATTR mp_bool				MP_CALL mp_tcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
@@ -261,7 +270,6 @@ MP_EXTERN_C_END
 
 
 #ifdef MP_IMPLEMENTATION
-
 #ifdef __cplusplus
 #define MP_STATIC_ASSERT(EXPRESSION, MESSAGE) static_assert(EXPRESSION, MESSAGE)
 #else
@@ -715,6 +723,7 @@ typedef struct mp_wcas_list_head
 	MP_ALIGNAS(MP_DPTR_SIZE) mp_flist_node* head;
 	size_t counter;
 } mp_wcas_list_head;
+
 typedef MP_ATOMIC(mp_wcas_list_head) mp_wcas_list;
 MP_STATIC_ASSERT(sizeof(mp_wcas_list_head) == MP_DPTR_SIZE, "");
 
@@ -732,6 +741,23 @@ typedef struct mp_persistent_node
 	mp_atomic_size_t bump;
 } mp_persistent_node;
 typedef MP_ATOMIC(mp_persistent_node*) mp_persistent_allocator;
+
+typedef struct mp_lcache_shortcut_group_ctrl
+{
+	uint8_t count;
+	uint8_t hints[7];
+} mp_lcache_shortcut_group_ctrl;
+
+typedef struct mp_lcache_shortcut_group
+{
+	mp_lcache_shortcut_group_ctrl ctrl;
+	size_t keys[7];
+} mp_lcache_shortcut_group;
+
+typedef struct mp_lcache_shortcut
+{
+	mp_lcache_shortcut_group groups[256];
+} mp_lcache_shortcut;
 
 enum
 {
@@ -1165,9 +1191,7 @@ MP_INLINE_NEVER static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
 		MP_JUNKPTR_CHECK(r);
-#ifdef MP_64BIT
-		MP_PREFETCH(r);
-#endif
+		MP_PREFETCH(prior.head);
 		desired.head = NULL;
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_REL(head, &prior, &desired))
@@ -1250,7 +1274,7 @@ MP_ATTR void* MP_CALL mp_persistent_malloc_impl(mp_persistent_allocator* allocat
 	size_t offset;
 	size = MP_ALIGN_CEIL(size, MP_CACHE_LINE_SIZE);
 	MP_UNLIKELY_IF(size >= chunk_size)
-		return mp_lcache_malloc(MP_ALIGN_CEIL_MASK(size, chunk_size_mask), MP_ENABLE_FALLBACK);
+		return mp_lcache_malloc(MP_ALIGN_CEIL_MASK(size, chunk_size_mask), 0);
 	current = (mp_persistent_node*)MP_ATOMIC_LOAD_ACQ_PTR(allocator);
 	do
 	{
@@ -1263,7 +1287,7 @@ MP_ATTR void* MP_CALL mp_persistent_malloc_impl(mp_persistent_allocator* allocat
 		}
 		current = (mp_persistent_node*)MP_ATOMIC_LOAD_ACQ_PTR(allocator);
 	} while (prior != current);
-	n = (mp_persistent_node*)mp_lcache_malloc(chunk_size, MP_ENABLE_FALLBACK);
+	n = (mp_persistent_node*)mp_lcache_malloc(chunk_size, 0);
 	MP_UNLIKELY_IF(n == NULL)
 		return NULL;
 	offset = MP_ALIGN_CEIL(sizeof(mp_persistent_node), MP_CACHE_LINE_SIZE);
@@ -1306,9 +1330,7 @@ MP_INLINE_ALWAYS static mp_tcache* mp_tcache_acquire_fast()
 		MP_UNLIKELY_IF(prior.head == NULL)
 			return NULL;
 		MP_JUNKPTR_CHECK(prior.head);
-#ifdef MP_64BIT
 		MP_PREFETCH(prior.head);
-#endif
 		desired.head = prior.head->next;
 		desired.generation = prior.generation + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_ACQ(&tcache_freelist, &prior, &desired))
@@ -1428,7 +1450,6 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocato
 	MP_INVARIANT(sc < tcache_small_sc_count);
 	reserved_count = mp_block_allocator_intrusive_reserved_count_of(sc);
 	MP_INVARIANT(reserved_count >= 1);
-	MP_PREFETCH((uint8_t*)allocator + (size_t)reserved_count * mp_sc_to_size(sc));
 	allocator->next = NULL;
 	allocator->free_count = MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - reserved_count;
 	MP_INVARIANT(reserved_count < allocator->free_count);
@@ -1675,7 +1696,7 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free_shared(mp_block_allocator* 
 }
 
 // ================================================================
-//	64-BIT VAS CHUNK DIGITAL TREE
+//	64-BIT CHUNK DIGITAL TREE
 // ================================================================
 
 #ifdef MP_64BIT
@@ -1727,37 +1748,33 @@ static void* mp_trie_insert(mp_trie_root* root, size_t key, uint_fast8_t value_s
 	key >>= branch_log2;
 	root_index = (uint_fast8_t)key;
 	root += root_index;
-	MP_SPIN_LOOP
+	branch = (mp_trie_branch)MP_ATOMIC_LOAD_ACQ_PTR(root);
+	MP_LIKELY_IF(branch == NULL)
 	{
-		branch = (mp_trie_branch)MP_ATOMIC_LOAD_ACQ_PTR(root);
-		MP_LIKELY_IF(branch != NULL)
-			break;
-		new_branch = (mp_trie_branch)mp_lcache_malloc(real_branch_size, MP_ENABLE_FALLBACK);
+		new_branch = (mp_trie_branch)mp_lcache_malloc(real_branch_size, 0);
 		MP_UNLIKELY_IF(new_branch == NULL)
 			return NULL;
 		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_REL_PTR(root, &branch, new_branch))
 		{
 			branch = new_branch;
 			(void)memset((size_t*)branch, 0, real_branch_size);
-			break;
 		}
-		mp_lcache_free((void*)new_branch, real_branch_size);
+		else
+		{
+			mp_lcache_free((void*)new_branch, real_branch_size);
+		}
 	}
 	branch += branch_index;
-	MP_SPIN_LOOP
+	leaf = (mp_trie_leaf)MP_ATOMIC_LOAD_ACQ_PTR(branch);
+	MP_LIKELY_IF(leaf == NULL)
 	{
-		leaf = (mp_trie_leaf)MP_ATOMIC_LOAD_ACQ_PTR(branch);
-		MP_LIKELY_IF(leaf != NULL)
-			break;
-		new_leaf = (mp_trie_leaf)mp_lcache_malloc(real_leaf_size, MP_ENABLE_FALLBACK);
+		new_leaf = (mp_trie_leaf)mp_lcache_malloc(real_leaf_size, 0);
 		MP_UNLIKELY_IF(new_leaf == NULL)
 			return NULL;
 		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_REL_PTR(branch, &leaf, new_leaf))
-		{
 			leaf = new_leaf;
-			break;
-		}
-		mp_lcache_free(new_leaf, real_leaf_size);
+		else
+			mp_lcache_free(new_leaf, real_leaf_size);
 	}
 	offset = leaf_index << value_size_log2;
 	MP_INVARIANT(offset + (1ULL << value_size_log2) <= real_leaf_size);
@@ -1958,7 +1975,7 @@ static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fa
 	}
 	else
 	{
-		MP_UNLIKELY_IF(!(flags & MP_ENABLE_FALLBACK))
+		MP_UNLIKELY_IF(flags & MP_NO_FALLBACK)
 			return NULL;
 		return mp_tcache_malloc_small_slow(tcache, size, sc);
 	}
@@ -1973,7 +1990,7 @@ static void* mp_tcache_malloc_large_slow(mp_tcache* tcache, size_t size, uint_fa
 	uint_fast8_t bin_index;
 	bin_index = mp_sc_large_bin_index(sc);
 	MP_INVARIANT(this_tcache != NULL);
-	buffer = mp_lcache_malloc(chunk_size, MP_ENABLE_FALLBACK);
+	buffer = mp_lcache_malloc(chunk_size, 0);
 	MP_UNLIKELY_IF(buffer == NULL)
 		return NULL;
 	allocator = mp_tcache_insert_allocator(buffer);
@@ -2020,7 +2037,7 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 	}
 	else
 	{
-		MP_UNLIKELY_IF(!(flags & MP_ENABLE_FALLBACK))
+		MP_UNLIKELY_IF(flags & MP_NO_FALLBACK)
 			return NULL;
 		return mp_tcache_malloc_large_slow(tcache, size, sc);
 	}
@@ -2161,9 +2178,9 @@ MP_ATTR void* MP_CALL mp_malloc(size_t size)
 	k = mp_round_size(MP_SIZE_WITH_REDZONE(size));
 	MP_INVARIANT(k >= MP_SIZE_WITH_REDZONE(size));
 	MP_LIKELY_IF(k <= mp_tcache_max_size())
-		r = mp_tcache_malloc(k, MP_ENABLE_FALLBACK);
+		r = mp_tcache_malloc(k, 0);
 	else
-		r = mp_lcache_malloc(k, MP_ENABLE_FALLBACK);
+		r = mp_lcache_malloc(k, 0);
 	mp_init_redzone(r, size);
 	return r;
 }
@@ -2172,9 +2189,9 @@ MP_ATTR mp_bool MP_CALL mp_resize(void* ptr, size_t old_size, size_t new_size)
 {
 	MP_INVARIANT(ptr != NULL);
 	MP_LIKELY_IF(MP_ALIGN_CEIL(old_size, chunk_size / 2) < old_size)
-		return mp_tcache_resize(ptr, old_size, new_size, MP_ENABLE_FALLBACK);
+		return mp_tcache_resize(ptr, old_size, new_size, 0);
 	else
-		return mp_lcache_resize(ptr, old_size, new_size, MP_ENABLE_FALLBACK);
+		return mp_lcache_resize(ptr, old_size, new_size, 0);
 }
 
 MP_ATTR void* MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size)
@@ -2281,8 +2298,15 @@ MP_ATTR size_t MP_CALL mp_tcache_round_size(size_t size)
 	return MP_SIZE_MAP[i + 1][0];
 }
 
-MP_ATTR size_t MP_CALL mp_tcache_min_size() { return 1; }
-MP_ATTR size_t MP_CALL mp_tcache_max_size() { return chunk_size / 2; }
+MP_ATTR size_t MP_CALL mp_tcache_min_size()
+{
+	return 0;
+}
+
+MP_ATTR size_t MP_CALL mp_tcache_max_size()
+{
+	return chunk_size / 2;
+}
 
 MP_ATTR void* MP_CALL mp_lcache_malloc(size_t size, mp_flags flags)
 {
@@ -2294,7 +2318,7 @@ MP_ATTR void* MP_CALL mp_lcache_malloc(size_t size, mp_flags flags)
 	bin = mp_lcache_find_bin(size);
 	MP_LIKELY_IF(bin != NULL)
 		r = mp_chunk_list_pop(bin);
-	MP_UNLIKELY_IF(r == NULL && (flags & MP_ENABLE_FALLBACK))
+	MP_UNLIKELY_IF(r == NULL && !(flags & MP_NO_FALLBACK))
 		r = mp_backend_malloc(size);
 	MP_UNLIKELY_IF(r == NULL)
 		return NULL;
@@ -2333,8 +2357,15 @@ MP_ATTR size_t MP_CALL mp_lcache_round_size(size_t size)
 	return MP_ALIGN_CEIL_MASK(size, chunk_size_mask);
 }
 
-MP_ATTR size_t MP_CALL mp_lcache_min_size() { return chunk_size; }
-MP_ATTR size_t MP_CALL mp_lcache_max_size() { return UINTPTR_MAX; }
+MP_ATTR size_t MP_CALL mp_lcache_min_size()
+{
+	return chunk_size;
+}
+
+MP_ATTR size_t MP_CALL mp_lcache_max_size()
+{
+	return UINTPTR_MAX;
+}
 
 MP_ATTR void* MP_CALL mp_persistent_malloc(size_t size)
 {
