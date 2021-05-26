@@ -57,6 +57,10 @@
 		If defined, includes the necessary system headers required for using large pages.
 		MP_INIT_ENABLE_LARGE_PAGES must still be passed to mp_init to actually enable large pages.
 
+	- MP_PAGE_MESHING_SUPPORT:
+		If defined, includes the necessary system headers required for meshing pages.
+		MP_INIT_ENABLE_LARGE_PAGES must still be passed to mp_init to actually enable large pages.
+
 	- MP_STRICT_CHUNK_FREELIST:
 		By default, MPMalloc's lock-free freelist for chunks uses the lower bits of the node pointers as generation counters to avoid ABA issues.
 		Since MPMalloc doesn't support page sizes smaller than 4KiB and cache line sizes smaller than 32 bytes, the minimum chunk size possible is 2^20.
@@ -139,12 +143,12 @@ typedef _Bool mp_bool;
 #define MP_EXTERN_C_END
 #endif
 
-#define MP_FALSE ((mp_bool)0)
-#define MP_TRUE ((mp_bool)1)
+enum { MP_FALSE, MP_TRUE };
 
 MP_EXTERN_C_BEGIN
 typedef enum mp_init_flag_bits
 {
+	MP_INIT_ENABLE_PAGE_MESHING = 1U << 30,
 	MP_INIT_ENABLE_LARGE_PAGES = 1U << 31
 } mp_init_flag_bits;
 
@@ -152,14 +156,14 @@ typedef uint32_t mp_init_flags;
 
 typedef enum mp_malloc_flag_bits
 {
-	MP_NO_FALLBACK = 1,
-	MP_NO_SYSCALL = 2,
-	MP_NO_ATOMICS = 4,
+	MP_NO_FALLBACK = 1U,
+	MP_NO_SYSCALL = 2U,
+	MP_NO_ATOMICS = 4U,
 } mp_malloc_flag_bits;
 
 typedef uint32_t mp_flags;
 
-typedef void(MP_PTR* mp_fn_init)(const struct mp_init_options*);
+typedef mp_bool(MP_PTR* mp_fn_init)(const struct mp_init_options*);
 typedef void(MP_PTR* mp_fn_cleanup)();
 typedef void*(MP_PTR* mp_fn_malloc)(size_t size);
 typedef mp_bool(MP_PTR* mp_fn_resize)(void* ptr, size_t old_size, size_t new_size);
@@ -209,8 +213,8 @@ typedef struct mp_param_list
 	mp_malloc_flag_bits flags;
 } mp_param_list;
 
-MP_ATTR void				MP_CALL mp_init(const mp_init_options* options);
-MP_ATTR void				MP_CALL mp_init_default();
+MP_ATTR mp_bool				MP_CALL mp_init(const mp_init_options* options);
+MP_ATTR mp_bool				MP_CALL mp_init_default();
 MP_ATTR mp_bool				MP_CALL mp_enabled();
 MP_ATTR void				MP_CALL mp_cleanup();
 MP_ATTR void				MP_CALL mp_thread_init();
@@ -327,7 +331,7 @@ MP_EXTERN_C_END
 #endif
 #elif defined(MP_TARGET_WINDOWS)
 #include <Windows.h>
-#ifdef MP_LARGE_PAGE_SUPPORT
+#if defined(MP_LARGE_PAGE_SUPPORT) || defined(MP_PAGE_MESHING_SUPPORT)
 #include <ntsecapi.h>
 #endif
 #else
@@ -488,14 +492,7 @@ MP_EXTERN_C_END
 #define MP_BLOCK_ALLOCATOR_MASK_COUNT (MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT / 2)
 #define MP_SHARED_ATTR MP_ALIGNAS(MP_CACHE_LINE_SIZE)
 #ifdef MP_DEBUG
-#define MP_EMMIT_MESSAGE(MESSAGE) mp_debug_message((MESSAGE), (sizeof((MESSAGE)) / sizeof((MESSAGE)[0])) - 1)
-#define MP_EMMIT_WARNING(MESSAGE) mp_debug_warning((MESSAGE), (sizeof((MESSAGE)) / sizeof((MESSAGE)[0])) - 1)
-#define MP_EMMIT_ERROR(MESSAGE) mp_debug_error((MESSAGE), (sizeof((MESSAGE)) / sizeof((MESSAGE)[0])) - 1)
 static_assert((MP_REDZONE_SIZE & ((UINTMAX_C(1) << MP_PTR_SIZE_LOG2) - UINTMAX_C(1))) == 0, "Error, MP_REDZONE_SIZE must be a multiple of sizeof(size_t).");
-#else
-#define MP_EMMIT_MESSAGE(MESSAGE)
-#define MP_EMMIT_WARNING(MESSAGE)
-#define MP_EMMIT_ERROR(MESSAGE)
 #endif
 
 // ================================================================
@@ -995,10 +992,18 @@ static ULONG va2_flags;
 static MEM_ADDRESS_REQUIREMENTS va2_addr_req;
 static MEM_EXTENDED_PARAMETER va2_ext_param;
 
-MP_INLINE_ALWAYS static void mp_os_init(const mp_init_options* options)
+MP_INLINE_ALWAYS static void mp_win32_print_get_last_error()
 {
-	HMODULE m;
-#ifdef MP_LARGE_PAGE_SUPPORT
+	DWORD k;
+	char buffer[1024];
+	(void)memset(buffer, 0, 1024);
+	k = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), buffer, 1024, NULL);
+	mp_debug_error(buffer, k);
+}
+
+#if defined(MP_LARGE_PAGE_SUPPORT) || defined(MP_PAGE_MESHING_SUPPORT)
+MP_INLINE_ALWAYS static mp_bool mp_win32_acquire_lock_memory_privilege()
+{
 	DWORD n;
 	HANDLE h;
 	TOKEN_USER users[64];
@@ -1006,50 +1011,60 @@ MP_INLINE_ALWAYS static void mp_os_init(const mp_init_options* options)
 	LSA_OBJECT_ATTRIBUTES attrs;
 	LSA_UNICODE_STRING rights;
 	TOKEN_PRIVILEGES p;
-	static const char errmsg[] = "Failed to acquire the SE_LOCK_MEMORY_NAME privilege, which is required to use large pages in MPMalloc.";
+	h = NULL;
+	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY, &h))
+		return MP_FALSE;
+	n = sizeof(users);
+	MP_UNLIKELY_IF(!GetTokenInformation(h, TokenUser, users, n, &n))
+		return MP_FALSE;
+	(void)CloseHandle(h);
+	(void)memset(&attrs, 0, sizeof(attrs));
+	MP_UNLIKELY_IF(!LsaOpenPolicy(NULL, &attrs, POLICY_CREATE_ACCOUNT | POLICY_LOOKUP_NAMES, &policy))
+		return MP_FALSE;
+	rights.Buffer = (PWSTR)SE_LOCK_MEMORY_NAME;
+	rights.Length = (USHORT)(wcslen(rights.Buffer) * sizeof(WCHAR));
+	rights.MaximumLength = rights.Length + (USHORT)sizeof(WCHAR);
+	MP_UNLIKELY_IF(!LsaAddAccountRights(policy, users->User.Sid, &rights, 1))
+		return MP_FALSE;
+	h = NULL;
+	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &h))
+		return MP_FALSE;
+	p.PrivilegeCount = 1;
+	p.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	MP_UNLIKELY_IF(!LookupPrivilegeValue(NULL, SE_LOCK_MEMORY_NAME, &p.Privileges[0].Luid))
+		return MP_FALSE;
+	MP_UNLIKELY_IF(!AdjustTokenPrivileges(h, FALSE, &p, 0, NULL, 0))
+		return MP_FALSE;
+	(void)CloseHandle(h);
+	return MP_TRUE;
+}
 #endif
+
+MP_INLINE_ALWAYS static mp_bool mp_os_init(const mp_init_options* options)
+{
+	HMODULE m;
 	m = GetModuleHandle(TEXT("KernelBase.DLL"));
-	MP_INVARIANT(m != NULL);
+	MP_UNLIKELY_IF(m == NULL)
+		return MP_FALSE;
 	va2_ptr = (VirtualAlloc2_t)GetProcAddress(m, "VirtualAlloc2");
-	MP_INVARIANT(va2_ptr != NULL);
+	MP_UNLIKELY_IF(va2_ptr == NULL)
+		return MP_FALSE;
 	va2_addr_req.Alignment = chunk_size;
 	va2_addr_req.HighestEndingAddress = max_address;
 	va2_addr_req.LowestStartingAddress = min_address;
 	va2_ext_param.Type = MemExtendedParameterAddressRequirements;
 	va2_ext_param.Pointer = &va2_addr_req;
 	va2_flags = MEM_RESERVE | MEM_COMMIT;
-#ifdef MP_LARGE_PAGE_SUPPORT
-	MP_UNLIKELY_IF(!(options->flags & MP_INIT_ENABLE_LARGE_PAGES))
-		return;
-	h = NULL;
-	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY, &h))
-		return MP_EMMIT_ERROR(errmsg);
-	n = sizeof(users);
-	MP_UNLIKELY_IF(!GetTokenInformation(h, TokenUser, users, n, &n))
-		return MP_EMMIT_ERROR(errmsg);
-	CloseHandle(h);
-	(void)memset(&attrs, 0, sizeof(attrs));
-	MP_UNLIKELY_IF(!LsaOpenPolicy(NULL, &attrs, POLICY_CREATE_ACCOUNT | POLICY_LOOKUP_NAMES, &policy))
-		return MP_EMMIT_ERROR(errmsg);
-	rights.Buffer = (PWSTR)SE_LOCK_MEMORY_NAME;
-	rights.Length = (USHORT)(wcslen(rights.Buffer) * sizeof(WCHAR));
-	rights.MaximumLength = rights.Length + (USHORT)sizeof(WCHAR);
-	MP_UNLIKELY_IF(!LsaAddAccountRights(policy, users->User.Sid, &rights, 1))
-		return MP_EMMIT_ERROR(errmsg);
-	h = NULL;
-	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &h))
-		return MP_EMMIT_ERROR(errmsg);
-	p.PrivilegeCount = 1;
-	p.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-	MP_UNLIKELY_IF(!LookupPrivilegeValue(NULL, SE_LOCK_MEMORY_NAME, &p.Privileges[0].Luid))
-		return MP_EMMIT_ERROR(errmsg);
-	MP_UNLIKELY_IF(!AdjustTokenPrivileges(h, FALSE, &p, 0, NULL, 0))
-		return MP_EMMIT_ERROR(errmsg);
-	va2_flags |= MEM_LARGE_PAGES;
-	CloseHandle(h);
+#if defined(MP_LARGE_PAGE_SUPPORT) || defined(MP_PAGE_MESHING_SUPPORT)
+	MP_LIKELY_IF((options->flags & (MP_INIT_ENABLE_LARGE_PAGES | MP_INIT_ENABLE_PAGE_MESHING)) != 0)
+		MP_UNLIKELY_IF(!mp_win32_acquire_lock_memory_privilege())
+			return MP_FALSE;
+	MP_LIKELY_IF(options->flags & MP_INIT_ENABLE_LARGE_PAGES)
+		va2_flags |= MEM_LARGE_PAGES;
 #else
 	MP_INVARIANT(!(options->flags & MP_INIT_ENABLE_LARGE_PAGES));
 #endif
+	return MP_TRUE;
 }
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
@@ -1695,6 +1710,46 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free_shared(mp_block_allocator* 
 		mp_block_allocator_recover_shared(allocator->owner->recovered_large + mp_sc_large_bin_index(allocator->size_class), allocator);
 }
 
+MP_INLINE_ALWAYS static mp_bool mp_block_allocator_meshable(mp_block_allocator** allocators, size_t count)
+{
+	size_t tmp[MP_BLOCK_ALLOCATOR_MASK_COUNT];
+	uint_fast32_t i, j;
+	MP_INVARIANT(count > 1);
+	(*allocators)->free_count += mp_block_allocator_reclaim_inline((*allocators)->free_map, (*allocators)->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+	(void)memcpy(tmp, (*allocators)->free_map, MP_CACHE_LINE_SIZE);
+	for (i = 1; i != count; ++i)
+	{
+		(*allocators)->free_count += mp_block_allocator_reclaim_inline((*allocators)->free_map, (*allocators)->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+		for (j = 0; j != MP_BLOCK_ALLOCATOR_MASK_COUNT; ++j)
+		{
+			MP_UNLIKELY_IF((tmp[j] & allocators[i]->free_map[j]) != 0)
+				return MP_FALSE;
+			tmp[j] |= allocators[i]->free_map[j];
+		}
+	}
+	return MP_TRUE;
+}
+
+MP_INLINE_ALWAYS static mp_bool mp_block_allocator_intrusive_meshable(mp_block_allocator_intrusive** allocators, size_t count)
+{
+	size_t tmp[MP_BLOCK_ALLOCATOR_MASK_COUNT];
+	uint_fast32_t i, j;
+	MP_INVARIANT(count > 1);
+	(*allocators)->free_count += mp_block_allocator_reclaim_inline((*allocators)->free_map, (*allocators)->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+	(void)memcpy(tmp, (*allocators)->free_map, MP_CACHE_LINE_SIZE);
+	for (i = 1; i != count; ++i)
+	{
+		(*allocators)->free_count += mp_block_allocator_reclaim_inline((*allocators)->free_map, (*allocators)->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
+		for (j = 0; j != MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT; ++j)
+		{
+			MP_UNLIKELY_IF((tmp[j] & allocators[i]->free_map[j]) != 0)
+				return MP_FALSE;
+			tmp[j] |= allocators[i]->free_map[j];
+		}
+	}
+	return MP_TRUE;
+}
+
 // ================================================================
 //	64-BIT CHUNK DIGITAL TREE
 // ================================================================
@@ -2048,7 +2103,7 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 // ================================================================
 
 MP_EXTERN_C_BEGIN
-MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
+MP_ATTR mp_bool MP_CALL mp_init(const mp_init_options* options)
 {
 	uint32_t i, n;
 #ifdef MP_TARGET_WINDOWS
@@ -2095,7 +2150,8 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 		backend_free = options->backend->free;
 		backend_purge = options->backend->purge;
 	}
-	backend_init(options);
+	MP_UNLIKELY_IF(!backend_init(options))
+		return MP_FALSE;
 #else
 	MP_INVARIANT(options->backend == NULL);
 	mp_os_init(options);
@@ -2106,13 +2162,14 @@ MP_ATTR void MP_CALL mp_init(const mp_init_options* options)
 #else
 	mp_init_flag = MP_TRUE;
 #endif
+	return MP_TRUE;
 }
 
-MP_ATTR void MP_CALL mp_init_default()
+MP_ATTR mp_bool MP_CALL mp_init_default()
 {
 	mp_init_options opt;
 	(void)memset(&opt, 0, sizeof(mp_init_options));
-	mp_init(&opt);
+	return mp_init(&opt);
 }
 
 MP_ATTR mp_bool MP_CALL mp_enabled()
@@ -2543,8 +2600,8 @@ MP_ATTR mp_bool MP_CALL mp_debug_validate_memory(const void* ptr, size_t size)
 
 MP_ATTR mp_bool MP_CALL mp_debug_overflow_check(const void* ptr, size_t size)
 {
-	MP_INVARIANT(ptr != NULL);
 #ifdef MP_CHECK_OVERFLOW
+	MP_INVARIANT(ptr != NULL);
 	const size_t* begin;
 	const size_t* end;
 	size_t expected;
