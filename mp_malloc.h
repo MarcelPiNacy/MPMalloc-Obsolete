@@ -1159,6 +1159,13 @@ MP_INLINE_ALWAYS static void mp_wcas_list_push(mp_wcas_list* head, void* ptr)
 	}
 }
 
+MP_INLINE_ALWAYS static void* mp_wcas_list_peek(mp_wcas_list* head)
+{
+	mp_wcas_list_head prior;
+	MP_ATOMIC_WLOAD_ACQ(head, prior);
+	return prior.head;
+}
+
 MP_INLINE_ALWAYS static void* mp_wcas_list_pop(mp_wcas_list* head)
 {
 	mp_flist_node* r;
@@ -1720,18 +1727,6 @@ static size_t leaf_mask;
 static uint8_t leaf_log2;
 static uint8_t branch_log2;
 
-typedef struct mp_trie_shortcut_group_ctrl
-{
-	MP_ALIGNAS(8) uint8_t count;
-	uint8_t hints[7];
-} mp_trie_shortcut_group_ctrl;
-
-typedef struct mp_trie_shortcut
-{
-	MP_ATOMIC(mp_trie_shortcut_group_ctrl) ctrl;
-	MP_ATOMIC(size_t) keys;
-} mp_trie_shortcut;
-
 typedef struct mp_trie
 {
 	mp_trie_root roots[256];
@@ -1807,18 +1802,105 @@ static void* mp_trie_insert(mp_trie* trie, size_t key, uint_fast8_t value_size_l
 	return leaf;
 }
 
-MP_INLINE_ALWAYS static size_t mp_trie_shortcut_find(mp_trie_shortcut* trie, size_t key, uint_fast8_t value_size_log2)
+typedef struct mp_trie_shortcut_ctrl
 {
-	mp_trie_shortcut* group;
-	uint8_t hint;
+	MP_ALIGNAS(8) uint8_t count;
+	uint8_t hints[7];
+} mp_trie_shortcut_ctrl;
+
+typedef struct mp_trie_shortcut
+{
+	MP_ATOMIC(mp_trie_shortcut_ctrl) ctrl;
+	MP_ATOMIC(size_t) keys;
+} mp_trie_shortcut;
+
+MP_INLINE_ALWAYS static uint_fast16_t mp_trie_shortcut_hash(size_t key)
+{
+	uint32_t mask;
+	mask = (uint32_t)key ^ (uint32_t)(key >> 16);
+	return (uint16_t)mask ^ (uint16_t)(mask >> 16);
+}
+
+MP_INLINE_ALWAYS static size_t mp_trie_shortcut_find(mp_trie_shortcut* shortcut, size_t key, uint_fast8_t value_size_log2)
+{
+	mp_trie_shortcut_ctrl ctrl;
+	uint64_t prior, current;
+	uint_fast16_t hash;
+	uint_fast8_t i, hint;
+	hash = mp_trie_shortcut_hash(key);
+	hint = (uint8_t)hash;
+	hash >>= 8;
+	shortcut += hash;
+	current = MP_ATOMIC_LOAD_ACQ_UPTR(&shortcut->ctrl);
+	do
+	{
+		prior = current;
+		(void)memcpy(&ctrl, &prior, 8);
+		for (i = 0; i != ctrl.count; ++i)
+			MP_LIKELY_IF(ctrl.hints[i] == hint && MP_ATOMIC_LOAD_ACQ_UPTR(shortcut->keys + i) == key)
+				return (size_t)hash * 7 + i;
+		current = MP_ATOMIC_LOAD_ACQ_UPTR(&shortcut->ctrl);
+	} while (prior == current);
 	return UINTPTR_MAX;
 }
 
-MP_INLINE_ALWAYS static size_t mp_trie_shortcut_insert(mp_trie_shortcut* trie, size_t key, uint_fast8_t value_size_log2)
+MP_INLINE_ALWAYS static size_t mp_trie_shortcut_insert(mp_trie_shortcut* shortcut, size_t key, uint_fast8_t value_size_log2)
 {
-	mp_trie_shortcut* group;
-	uint8_t hint;
-	return UINTPTR_MAX;
+	mp_trie_shortcut_ctrl ctrl;
+	uint64_t prior, desired;
+	uint_fast16_t hash;
+	uint_fast8_t hint;
+	hash = mp_trie_shortcut_hash(key);
+	hint = (uint8_t)hash;
+	hash >>= 8;
+	shortcut += hash;
+	MP_SPIN_LOOP
+	{
+		prior = MP_ATOMIC_LOAD_ACQ_UPTR(&shortcut->ctrl);
+		(void)memcpy(&ctrl, &prior, 8);
+		MP_INVARIANT(ctrl.count < 7);
+		MP_UNLIKELY_IF(ctrl.count == 7)
+			return UINTPTR_MAX;
+		ctrl.hints[ctrl.count] = hint;
+		++ctrl.count;
+		(void)memcpy(&desired, &ctrl, 8);
+		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_ACQ_UPTR(&shortcut->ctrl, &prior, desired))
+			break;
+	}
+	--ctrl.count;
+	MP_ATOMIC_STORE_REL_UPTR(&shortcut->keys + ctrl.count, key);
+	return (size_t)hash * 7 + ctrl.count;
+}
+
+MP_INLINE_ALWAYS static size_t mp_trie_shortcut_erase(mp_trie_shortcut* shortcut, size_t key, uint_fast8_t value_size_log2)
+{
+	mp_trie_shortcut_ctrl ctrl;
+	uint64_t prior, desired;
+	uint_fast16_t hash;
+	uint_fast8_t i, hint;
+	hash = mp_trie_shortcut_hash(key);
+	hint = (uint8_t)hash;
+	hash >>= 8;
+	shortcut += hash;
+	MP_SPIN_LOOP
+	{
+		prior = MP_ATOMIC_LOAD_ACQ_UPTR(&shortcut->ctrl);
+		(void)memcpy(&ctrl, &prior, 8);
+		MP_INVARIANT(ctrl.count < 7);
+		for (i = 0; i != ctrl.count; ++i)
+			MP_LIKELY_IF(ctrl.hints[i] == hint && MP_ATOMIC_LOAD_ACQ_UPTR(shortcut->keys + i) == key)
+				break;
+		MP_UNLIKELY_IF(i == 7)
+			return UINTPTR_MAX;
+		--ctrl.count;
+		MP_LIKELY_IF(ctrl.count != 0)
+			ctrl.hints[i] = ctrl.hints[ctrl.count];
+		(void)memcpy(&desired, &ctrl, 8);
+		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_REL_UPTR(&shortcut->ctrl, &prior, desired))
+			break;
+	}
+	(void)MP_ATOMIC_CMPXCHG_REL_UPTR(&shortcut->keys + i, &key, 0);
+	return (size_t)hash * 7 + ctrl.count - 1;
 }
 #endif
 
@@ -1999,7 +2081,7 @@ static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fa
 		MP_ATOMIC_WLOAD_ACQ(recovered, rhead);
 		MP_UNLIKELY_IF(rhead.head != NULL)
 			*bin = (mp_block_allocator_intrusive*)mp_wcas_list_pop_all(recovered);
-		MP_UNLIKELY_IF(*bin == NULL)
+		MP_UNLIKELY_IF(*bin == NULL && mp_wcas_list_peek(rcache_small + sc) != NULL)
 			*bin = (mp_block_allocator_intrusive*)mp_wcas_list_pop(rcache_small + sc);
 	}
 	allocator = *bin;
@@ -2063,7 +2145,7 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 		MP_ATOMIC_WLOAD_ACQ(recovered, rhead);
 		MP_UNLIKELY_IF(rhead.head != NULL)
 			*bin = (mp_block_allocator*)mp_wcas_list_pop_all(recovered);
-		MP_UNLIKELY_IF(*bin == NULL)
+		MP_UNLIKELY_IF(*bin == NULL && mp_wcas_list_peek(rcache_large + bin_index) != NULL)
 			*bin = (mp_block_allocator*)mp_wcas_list_pop(rcache_large + bin_index);
 	}
 	allocator = *bin;
