@@ -1876,7 +1876,7 @@ MP_INLINE_ALWAYS static mp_chunk_list* mp_lcache_find_bin(size_t size)
 	MP_LIKELY_IF(size <= chunk_size)
 		return &single_chunk_list;
 	--size;
-	return (mp_chunk_list*)mp_trie_find(&lcache_bins, size, MP_CEIL_LOG2(sizeof(mp_block_allocator)));
+	return (mp_chunk_list*)mp_trie_find(&lcache_bins, size, MP_CEIL_LOG2(sizeof(mp_chunk_list)));
 #endif
 }
 
@@ -1889,7 +1889,7 @@ MP_INLINE_ALWAYS static mp_chunk_list* mp_lcache_insert_bin(size_t size)
 	MP_LIKELY_IF(size <= chunk_size)
 		return &single_chunk_list;
 	--size;
-	return (mp_chunk_list*)mp_trie_insert(&lcache_bins, size, MP_CEIL_LOG2(sizeof(mp_block_allocator)));
+	return (mp_chunk_list*)mp_trie_insert(&lcache_bins, size, MP_CEIL_LOG2(sizeof(mp_chunk_list)));
 #endif
 }
 
@@ -1899,6 +1899,8 @@ MP_INLINE_ALWAYS static mp_chunk_list* mp_lcache_insert_bin(size_t size)
 
 #ifdef MP_32BIT
 static mp_block_allocator* tcache_lookup;
+#else
+static mp_trie tcache_lookup;
 #endif
 
 MP_INLINE_ALWAYS static void mp_this_tcache_check_integrity()
@@ -1946,7 +1948,7 @@ MP_INLINE_ALWAYS static mp_block_allocator* mp_tcache_find_allocator(const void*
 	MP_INVARIANT(tcache_lookup != NULL);
 	return tcache_lookup + id;
 #else
-	return (mp_block_allocator*)mp_trie_find(&lcache_bins, id, MP_CEIL_LOG2(sizeof(mp_block_allocator)));
+	return (mp_block_allocator*)mp_trie_find(&tcache_lookup, id, MP_CEIL_LOG2(sizeof(mp_block_allocator)));
 #endif
 }
 
@@ -1957,7 +1959,7 @@ MP_INLINE_ALWAYS static mp_block_allocator* mp_tcache_insert_allocator(const voi
 #else
 	size_t id;
 	id = (size_t)ptr >> chunk_size_log2;
-	return (mp_block_allocator*)mp_trie_insert(&lcache_bins, id, MP_CEIL_LOG2(sizeof(mp_block_allocator)));
+	return (mp_block_allocator*)mp_trie_insert(&tcache_lookup, id, MP_CEIL_LOG2(sizeof(mp_block_allocator)));
 #endif
 }
 
