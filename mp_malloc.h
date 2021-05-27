@@ -279,7 +279,6 @@ MP_EXTERN_C_END
 #else
 #define MP_STATIC_ASSERT(EXPRESSION, MESSAGE) _Static_assert(EXPRESSION, MESSAGE)
 #endif
-
 #if UINT32_MAX == UINTPTR_MAX
 #define MP_32BIT
 #define MP_PTR_SIZE 4
@@ -299,29 +298,21 @@ MP_EXTERN_C_END
 #define MP_PTR_BITS_LOG2 6
 #define MP_DPTR_SIZE 16
 #endif
-
-#ifndef MP_STRING_JOIN
-#define MP_STRING_JOIN(LHS, RHS) LHS##RHS
-#endif
-
 #ifdef MP_CHECK_OVERFLOW
 #define MP_SIZE_WITH_REDZONE(K) ((K) + MP_REDZONE_SIZE)
 #else
 #define MP_SIZE_WITH_REDZONE(K) (K)
 #endif
-
 #ifdef MP_DEBUG
 #define MP_DEBUG_JUNK_FILL(P, K) MP_UNLIKELY_IF((P) != NULL) (void)memset((P), MP_JUNK_VALUE, (K))
 #else
 #define MP_DEBUG_JUNK_FILL(P, K)
 #endif
-
 #define MP_ALIGN_FLOOR_MASK(VALUE, MASK) ((VALUE) & ~(MASK))
 #define MP_ALIGN_CEIL_MASK(VALUE, MASK) ((VALUE + (MASK)) & ~(MASK))
 #define MP_ALIGN_FLOOR(VALUE, ALIGNMENT) MP_ALIGN_FLOOR_MASK(VALUE, (ALIGNMENT) - 1)
 #define MP_ALIGN_CEIL(VALUE, ALIGNMENT) MP_ALIGN_CEIL_MASK(VALUE, (ALIGNMENT) - 1)
 #define MP_IS_ALIGNED(PTR, ALIGNMENT) (((size_t)(PTR) & ((size_t)(ALIGNMENT) - (size_t)1)) == 0)
-
 #ifdef MP_TARGET_LINUX
 #include <unistd.h>
 #include <sys/mman.h>
@@ -527,6 +518,9 @@ typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
 #endif
 #define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET) (void)memcpy(&(TARGET), (const void*)(WHERE), 16); __atomic_thread_fence(__ATOMIC_ACQUIRE)
 #elif defined(MP_MSVC)
+#ifndef MP_STRING_JOIN
+#define MP_STRING_JOIN(LHS, RHS) LHS##RHS
+#endif
 // I'd like to give special thanks to the visual studio dev team for being more than 10 years ahead of the competition in not adding support to the C11 standard to their compiler.
 #define MP_ATOMIC(TYPE) TYPE volatile
 typedef MP_ATOMIC(CHAR) mp_atomic_bool;
@@ -592,7 +586,6 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_acq((volatile mp_msvc_uintptr_pair*)(WHERE), (mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE)	mp_impl_cmpxchg16_rel((volatile mp_msvc_uintptr_pair*)(WHERE), (mp_msvc_uintptr_pair*)(EXPECTED), (const mp_msvc_uintptr_pair*)(VALUE))
 #endif
-
 #define MP_ATOMIC_LOAD_ACQ_PTR(WHERE) (void*)MP_ATOMIC_LOAD_ACQ_UPTR((mp_atomic_size_t*)WHERE)
 #define MP_ATOMIC_STORE_REL_PTR(WHERE, VALUE) MP_ATOMIC_STORE_REL_UPTR((mp_atomic_size_t*)WHERE, (size_t)VALUE)
 #define MP_ATOMIC_XCHG_ACQ_PTR(WHERE, VALUE) (void*)MP_ATOMIC_XCHG_ACQ_UPTR((mp_atomic_size_t*)WHERE, (size_t)VALUE)
@@ -600,13 +593,11 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 #define MP_ATOMIC_CMPXCHG_REL_PTR(WHERE, EXPECTED, VALUE) MP_ATOMIC_CMPXCHG_REL_UPTR((mp_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
 #define MP_ATOMIC_CMPXCHG_WEAK_ACQ_PTR(WHERE, EXPECTED, VALUE) MP_ATOMIC_CMPXCHG_WEAK_ACQ_UPTR((mp_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
 #define MP_ATOMIC_CMPXCHG_WEAK_REL_PTR(WHERE, EXPECTED, VALUE) MP_ATOMIC_CMPXCHG_WEAK_REL_UPTR((mp_atomic_size_t*)WHERE, (size_t*)EXPECTED, (size_t)VALUE)
-
 #define MP_NON_ATOMIC_SET(WHERE) (*((mp_bool*)&(WHERE)) = MP_TRUE)
 #define MP_NON_ATOMIC_LOAD_PTR(WHERE) *((const void**)(WHERE))
 #define MP_NON_ATOMIC_STORE_PTR(WHERE, VALUE) *((void**)(WHERE)) = (VALUE)
 #define MP_NON_ATOMIC_LOAD_UPTR(WHERE) *((const size_t*)(WHERE))
 #define MP_NON_ATOMIC_STORE_UPTR(WHERE, VALUE) *((size_t*)(WHERE)) = (VALUE)
-
 #define MP_PTRS_PER_ZMMWORD (64 / MP_PTR_SIZE)
 #define MP_PTRS_PER_YMMWORD (32 / MP_PTR_SIZE)
 #define MP_PTRS_PER_XMMWORD (16 / MP_PTR_SIZE)
@@ -862,11 +853,6 @@ static const uint8_t MP_SIZE_MAP_OFFSETS[MP_SIZE_MAP_MAX_CEIL_LOG2 + 1]		= { 0, 
 #error ""
 #endif
 
-MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc_large(size_t size)
-{
-	return MP_SIZE_CLASS_COUNT + MP_CEIL_LOG2(size) - page_size_log2;
-}
-
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc(size_t size)
 {
 	uint_fast8_t i, j;
@@ -875,7 +861,7 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc(size_t size)
 		return 0;
 	i = MP_FLOOR_LOG2(size);
 	MP_UNLIKELY_IF(i > MP_SIZE_MAP_MAX_FLOOR_LOG2)
-		return mp_size_to_sc_large(size);
+		return MP_SIZE_CLASS_COUNT + MP_CEIL_LOG2(size) - page_size_log2;
 	tmp = 1U << i;
 	step = 1U << MP_SIZE_MAP_ALIGNMENT_LOG2S[i];
 	for (j = 0; j != MP_SIZE_MAP_SUBCLASS_COUNTS[i]; ++j)
@@ -899,12 +885,6 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_sc_to_size_large_log2(uint_
 	return mp_sc_large_bin_index(sc) + page_size_log2 + 1;
 }
 
-MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_sc_to_size_large(uint_fast8_t sc)
-{
-	MP_INVARIANT(sc >= MP_SIZE_CLASS_COUNT);
-	return (size_t)1 << mp_sc_to_size_large_log2(sc);
-}
-
 MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_sc_to_size_small(uint_fast8_t sc)
 {
 	return MP_SIZE_CLASSES[sc];
@@ -914,7 +894,7 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_sc_to_size(uint_fast8_t sc)
 {
 	MP_LIKELY_IF(sc < MP_SIZE_CLASS_COUNT)
 		return mp_sc_to_size_small(sc);
-	return mp_sc_to_size_large(sc);
+	return (size_t)1 << mp_sc_to_size_large_log2(sc);
 }
 
 // ================================================================
@@ -1111,7 +1091,6 @@ MP_INLINE_ALWAYS static void mp_os_prefetch_pages(void* ptr, size_t size)
 
 #ifndef MP_NO_CUSTOM_BACKEND
 static void mp_empty_function() { }
-
 static mp_fn_init backend_init = mp_os_init;
 static mp_fn_cleanup backend_cleanup = mp_empty_function;
 static mp_fn_malloc backend_malloc = mp_os_malloc;
@@ -1563,7 +1542,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allo
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim_noinline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	r = allocator->buffer + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) << mp_sc_to_size_large_log2(allocator->size_class));
-	MP_INVARIANT(r < allocator->buffer + (MP_BLOCK_ALLOCATOR_MAX_CAPACITY << mp_sc_to_size_large_log2(allocator->size_class)));
+	MP_INVARIANT(r < allocator->buffer + ((size_t)MP_BLOCK_ALLOCATOR_MAX_CAPACITY << mp_sc_to_size_large_log2(allocator->size_class)));
 	return r;
 }
 
@@ -1702,11 +1681,10 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free_shared(mp_block_allocator* 
 // ================================================================
 
 #ifdef MP_64BIT
-
-#define MP_TRIE_ROOT_SIZE 256
 typedef uint8_t* mp_trie_leaf;
 typedef MP_ATOMIC(mp_trie_leaf)* mp_trie_branch;
 typedef MP_ATOMIC(mp_trie_branch) mp_trie_root;
+
 static size_t branch_size;
 static size_t branch_mask;
 static size_t leaf_size;
@@ -1771,6 +1749,7 @@ static void* mp_trie_insert(mp_trie* trie, size_t key, uint_fast8_t value_size_l
 			mp_lcache_free((void*)new_branch, real_branch_size);
 		}
 	}
+	MP_INVARIANT(branch != NULL);
 	branch += branch_index;
 	leaf = (mp_trie_leaf)MP_ATOMIC_LOAD_ACQ_PTR(branch);
 	MP_LIKELY_IF(leaf == NULL)
@@ -1877,8 +1856,9 @@ MP_INLINE_ALWAYS static size_t mp_trie_shortcut_erase(mp_trie_shortcut* shortcut
 		for (i = 0; i != ctrl.count; ++i)
 			MP_LIKELY_IF(ctrl.hints[i] == hint && MP_ATOMIC_LOAD_ACQ_UPTR(shortcut->keys + i) == key)
 				break;
-		MP_UNLIKELY_IF(i == 7)
+		MP_UNLIKELY_IF(i == ctrl.count)
 			return UINTPTR_MAX;
+		MP_INVARIANT(ctrl.count != 0);
 		--ctrl.count;
 		MP_LIKELY_IF(ctrl.count != 0)
 			ctrl.hints[i] = ctrl.hints[ctrl.count];
