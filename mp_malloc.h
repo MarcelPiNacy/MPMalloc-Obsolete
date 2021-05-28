@@ -312,6 +312,8 @@ MP_EXTERN_C_END
 #define MP_ALIGN_CEIL_MASK(VALUE, MASK) ((VALUE + (MASK)) & ~(MASK))
 #define MP_ALIGN_FLOOR(VALUE, ALIGNMENT) MP_ALIGN_FLOOR_MASK(VALUE, (ALIGNMENT) - 1)
 #define MP_ALIGN_CEIL(VALUE, ALIGNMENT) MP_ALIGN_CEIL_MASK(VALUE, (ALIGNMENT) - 1)
+#define MP_OPTIONAL(VALUE, CONDITION) ((size_t)(VALUE) & (size_t)-(ptrdiff_t)(CONDITION))
+#define MP_SELECT(CONDITION, ON_TRUE, ON_FALSE) (MP_OPTIONAL(ON_TRUE, (CONDITION)) | MP_OPTIONAL(ON_FALSE, !(CONDITION)))
 #define MP_IS_ALIGNED(PTR, ALIGNMENT) (((size_t)(PTR) & ((size_t)(ALIGNMENT) - (size_t)1)) == 0)
 #ifdef MP_TARGET_LINUX
 #include <unistd.h>
@@ -820,15 +822,15 @@ static mp_bool mp_debug_enabled_flag;
 #define MP_SIZE_MAP_MAX 4096
 #define MP_SIZE_MAP_MAX_FLOOR_LOG2 11
 #define MP_SIZE_MAP_MAX_CEIL_LOG2 12
-#define MP_SIZE_CLASS_COUNT 61
+#define MP_SIZE_CLASS_COUNT 60
 #define MP_TCACHE_SMALL_BIN_BUFFER_SIZE MP_PTR_SIZE * MP_SIZE_CLASS_COUNT
 
-static const uint16_t MP_SIZE_CLASSES[MP_SIZE_CLASS_COUNT] =
+static const uint16_t MP_SIZE_CLASSES[] =
 {
 	1,
 	2,
 	4,
-	8, 12,
+	8,
 	16, 20, 24, 28,
 	32, 40, 48, 56,
 	64, 72, 80, 88, 96, 104, 112, 120,
@@ -839,9 +841,9 @@ static const uint16_t MP_SIZE_CLASSES[MP_SIZE_CLASS_COUNT] =
 	2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840
 };
 
-static const uint8_t MP_SIZE_MAP_ALIGNMENT_LOG2S[MP_SIZE_MAP_MAX_CEIL_LOG2]	= { 0, 0, 0, 2, 2, 3, 3, 4, 5, 6, 7, 8 };
-static const uint8_t MP_SIZE_MAP_SUBCLASS_COUNTS[MP_SIZE_MAP_MAX_CEIL_LOG2]	= { 1, 1, 1, 2, 4, 4, 8, 8, 8, 8, 8, 8 };
-static const uint8_t MP_SIZE_MAP_OFFSETS[MP_SIZE_MAP_MAX_CEIL_LOG2 + 1]		= { 0, 1, 2, 3, 5, 9, 13, 21, 29, 37, 45, 53, 61 };
+static const uint8_t MP_SIZE_MAP_ALIGNMENT_LOG2S[MP_SIZE_MAP_MAX_CEIL_LOG2]	= { 0, 0, 0, 0, 2, 3, 3, 4, 5, 6, 7, 8 };
+static const uint8_t MP_SIZE_MAP_SUBCLASS_COUNTS[MP_SIZE_MAP_MAX_CEIL_LOG2]	= { 1, 1, 1, 1, 4, 4, 8, 8, 8, 8, 8, 8 };
+static const uint8_t MP_SIZE_MAP_OFFSETS[MP_SIZE_MAP_MAX_CEIL_LOG2 + 1]		= { 0, 1, 2, 3, 4, 8, 12, 20, 28, 36, 44, 52, 60 };
 
 #if MP_CACHE_LINE_SIZE == 32
 #define MP_MAX_BLOCK_ALLOCATOR_INTRUSIVE_MULTIBLOCK_HEADER 15
@@ -885,9 +887,33 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_sc_to_size_large_log2(uint_
 	return mp_sc_large_bin_index(sc) + page_size_log2 + 1;
 }
 
-MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_sc_to_size_small(uint_fast8_t sc)
+MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast32_t mp_sc_to_size_small(uint_fast8_t sc)
 {
-	return MP_SIZE_CLASSES[sc];
+	uint_fast32_t desired = MP_SIZE_CLASSES[sc];
+	uint_fast32_t r;
+	uint_fast8_t log2, index;
+	if (sc < 4)
+	{
+		r = (size_t)1 << sc;
+	}
+	else
+	{
+		if (sc < 12)
+		{
+			sc -= 4;
+			log2 = 4 + (sc >> 2);
+			index = sc & 3;
+		}
+		else
+		{
+			sc -= 12;
+			log2 = 6 + (sc >> 3);
+			index = sc & 7;
+		}
+		r = (1U << log2) + (MP_SIZE_MAP_ALIGNMENT_LOG2S[log2] << index);
+	}
+	MP_INVARIANT(r == desired);
+	return r;
 }
 
 MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_sc_to_size(uint_fast8_t sc)
@@ -934,7 +960,6 @@ MP_INLINE_ALWAYS static void mp_init_redzone(void* buffer, size_t size)
 #ifdef MP_TARGET_WINDOWS
 typedef PVOID(WINAPI* VirtualAlloc2_t)(HANDLE Process, PVOID BaseAddress, SIZE_T Size, ULONG AllocationType, ULONG PageProtection, MEM_EXTENDED_PARAMETER* ExtendedParameters, ULONG ParameterCount);
 
-#define MP_WINDOWS_CURRENT_PROCESS_HANDLE ((HANDLE)-1)
 static VirtualAlloc2_t va2_ptr;
 static ULONG va2_flags;
 static MEM_ADDRESS_REQUIREMENTS va2_addr_req;
@@ -960,7 +985,7 @@ MP_INLINE_ALWAYS static mp_bool mp_win32_acquire_lock_memory_privilege()
 	LSA_UNICODE_STRING rights;
 	TOKEN_PRIVILEGES p;
 	h = NULL;
-	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY, &h))
+	MP_UNLIKELY_IF(!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h))
 		return MP_FALSE;
 	n = sizeof(users);
 	MP_UNLIKELY_IF(!GetTokenInformation(h, TokenUser, users, n, &n))
@@ -975,7 +1000,7 @@ MP_INLINE_ALWAYS static mp_bool mp_win32_acquire_lock_memory_privilege()
 	MP_UNLIKELY_IF(!LsaAddAccountRights(policy, users->User.Sid, &rights, 1))
 		return MP_FALSE;
 	h = NULL;
-	MP_UNLIKELY_IF(!OpenProcessToken(MP_WINDOWS_CURRENT_PROCESS_HANDLE, TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &h))
+	MP_UNLIKELY_IF(!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &h))
 		return MP_FALSE;
 	p.PrivilegeCount = 1;
 	p.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
@@ -1017,7 +1042,7 @@ MP_INLINE_ALWAYS static mp_bool mp_os_init(const mp_init_options* options)
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
 {
-	return va2_ptr(MP_WINDOWS_CURRENT_PROCESS_HANDLE, NULL, size, va2_flags, PAGE_READWRITE, &va2_ext_param, 1);
+	return va2_ptr(GetCurrentProcess(), NULL, size, va2_flags, PAGE_READWRITE, &va2_ext_param, 1);
 }
 
 MP_INLINE_ALWAYS static mp_bool mp_os_resize(void* ptr, size_t old_size, size_t new_size) { return MP_FALSE; }
@@ -1041,7 +1066,7 @@ MP_INLINE_ALWAYS static void mp_os_prefetch_pages(void* ptr, size_t size)
 	WIN32_MEMORY_RANGE_ENTRY entries;
 	entries.NumberOfBytes = size;
 	entries.VirtualAddress = ptr;
-	(void)PrefetchVirtualMemory(MP_WINDOWS_CURRENT_PROCESS_HANDLE, 1, &entries, 0);
+	(void)PrefetchVirtualMemory(GetCurrentProcess(), 1, &entries, 0);
 }
 
 #elif defined(MP_TARGET_LINUX)
