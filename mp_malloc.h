@@ -519,7 +519,7 @@ typedef MP_ATOMIC(mp_bool) mp_atomic_bool;
 #define MP_ATOMIC_WCMPXCHG_ACQ(WHERE, EXPECTED, VALUE) __atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #define MP_ATOMIC_WCMPXCHG_REL(WHERE, EXPECTED, VALUE) __atomic_compare_exchange_n((volatile __int128*)(WHERE), (__int128*)(EXPECTED), *(const __int128*)(VALUE), MP_FALSE, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)
 #endif
-#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET) (void)memcpy(&(TARGET), (const void*)(WHERE), 16); __atomic_thread_fence(__ATOMIC_ACQUIRE)
+#define MP_ATOMIC_WLOAD_ACQ(WHERE, TARGET) (void)memcpy(&(TARGET), (const void*)(WHERE), MP_DPTR_SIZE); __atomic_thread_fence(__ATOMIC_ACQUIRE)
 #elif defined(MP_MSVC)
 #ifndef MP_STRING_JOIN
 #define MP_STRING_JOIN(LHS, RHS) LHS##RHS
@@ -945,15 +945,6 @@ static VirtualAlloc2_t va2_ptr;
 static ULONG va2_flags;
 static MEM_ADDRESS_REQUIREMENTS va2_addr_req;
 static MEM_EXTENDED_PARAMETER va2_ext_param;
-
-MP_INLINE_ALWAYS static void mp_win32_print_get_last_error()
-{
-	DWORD k;
-	char buffer[1024];
-	(void)memset(buffer, 0, 1024);
-	k = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(), MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), buffer, 1024, NULL);
-	mp_debug_error(buffer, k);
-}
 
 #if defined(MP_LARGE_PAGE_SUPPORT) || defined(MP_PAGE_MESHING_SUPPORT)
 MP_INLINE_ALWAYS static mp_bool mp_win32_acquire_lock_memory_privilege()
@@ -1963,7 +1954,6 @@ MP_INLINE_ALWAYS static void mp_this_tcache_check_integrity()
 #ifdef MP_DEBUG
 	mp_block_allocator_intrusive* allocator_intrusive;
 	mp_block_allocator* allocator;
-	mp_wcas_list rhead;
 	size_t i;
 	for (i = 0; i != tcache_small_sc_count; ++i)
 		for (allocator_intrusive = this_tcache->bins[i]; allocator_intrusive != NULL; allocator_intrusive = allocator_intrusive->next)
@@ -1972,17 +1962,11 @@ MP_INLINE_ALWAYS static void mp_this_tcache_check_integrity()
 		for (allocator = this_tcache->bins_large[i]; allocator != NULL; allocator = allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator(allocator));
 	for (i = 0; i != tcache_small_sc_count; ++i)
-	{
-		MP_ATOMIC_WLOAD_ACQ(this_tcache->recovered_small + i, rhead);
-		for (allocator_intrusive = (mp_block_allocator_intrusive*)rhead.head; allocator_intrusive != NULL; allocator_intrusive = allocator_intrusive->next)
+		for (allocator_intrusive = (mp_block_allocator_intrusive*)mp_wcas_list_peek(this_tcache->recovered_small + i); allocator_intrusive != NULL; allocator_intrusive = allocator_intrusive->next)
 			MP_INVARIANT(mp_is_valid_block_allocator_intrusive(allocator_intrusive));
-	}
 	for (i = 0; i != tcache_large_sc_count; ++i)
-	{
-		MP_ATOMIC_WLOAD_ACQ(this_tcache->recovered_large + i, rhead);
-		for (allocator = (mp_block_allocator*)rhead.head; allocator != NULL; allocator = allocator->next)
+		for (allocator = (mp_block_allocator*)mp_wcas_list_peek(this_tcache->recovered_large + i); allocator != NULL; allocator = allocator->next)
 			MP_INVARIANT(mp_is_valid_block_allocator(allocator));
-	}
 #endif
 }
 
