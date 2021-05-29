@@ -32,9 +32,8 @@ namespace mp
 	MP_ATTR inline void			MP_CALL thread_init() noexcept { return mp_thread_init(); }
 	MP_ATTR inline void			MP_CALL thread_cleanup() noexcept { mp_thread_cleanup(); }
 	MP_ATTR inline void*		MP_CALL malloc(size_t size) noexcept { return mp_malloc(size); }
-	MP_ATTR inline bool			MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_resize(ptr, old_size, new_size); }
-	MP_ATTR inline void*		MP_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_realloc(ptr, old_size, new_size); }
-	MP_ATTR inline void			MP_CALL free(void* ptr) noexcept { mp_free(ptr); }
+	MP_ATTR inline bool			MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_resize_sized(ptr, old_size, new_size); }
+	MP_ATTR inline void*		MP_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_realloc_sized(ptr, old_size, new_size); }
 	MP_ATTR inline void			MP_CALL free(void* ptr, size_t size) noexcept { mp_free_sized(ptr, size); }
 	MP_ATTR inline size_t		MP_CALL round_size(size_t size) noexcept { return mp_round_size(size); }
 
