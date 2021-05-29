@@ -224,7 +224,8 @@ MP_ATTR void				MP_CALL mp_thread_cleanup();
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_malloc(size_t size);
 MP_ATTR mp_bool				MP_CALL mp_resize(void* ptr, size_t old_size, size_t new_size);
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size);
-MP_ATTR void				MP_CALL mp_free(void* ptr, size_t size);
+MP_ATTR void				MP_CALL mp_free(void* ptr);
+MP_ATTR void				MP_CALL mp_free_sized(void* ptr, size_t size);
 MP_ATTR size_t				MP_CALL mp_round_size(size_t size);
 
 //MP_NODISCARD MP_ATTR void*	MP_CALL mp_xmalloc(size_t size, mp_param_list* params, size_t param_count);
@@ -819,27 +820,9 @@ static mp_bool mp_debug_enabled_flag;
 //	SIZE CLASS MAPPING FUNCTIONS
 // ================================================================
 
-#define MP_SIZE_MAP_MAX 4096
 #define MP_SIZE_MAP_MAX_FLOOR_LOG2 11
-#define MP_SIZE_MAP_MAX_CEIL_LOG2 12
+#define MP_SIZE_MAP_MAX_CEIL_LOG2 (MP_SIZE_MAP_MAX_FLOOR_LOG2 + 1)
 #define MP_SIZE_CLASS_COUNT 60
-#define MP_TCACHE_SMALL_BIN_BUFFER_SIZE MP_PTR_SIZE * MP_SIZE_CLASS_COUNT
-
-static const uint16_t MP_SIZE_CLASSES[] =
-{
-	1,
-	2,
-	4,
-	8,
-	16, 20, 24, 28,
-	32, 40, 48, 56,
-	64, 72, 80, 88, 96, 104, 112, 120,
-	128, 144, 160, 176, 192, 208, 224, 240, 
-	256, 288, 320, 352, 384, 416, 448, 480,
-	512, 576, 640, 704, 768, 832, 896, 960,
-	1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920,
-	2048, 2304, 2560, 2816, 3072, 3328, 3584, 3840
-};
 
 static const uint8_t MP_SIZE_MAP_ALIGNMENT_LOG2S[MP_SIZE_MAP_MAX_CEIL_LOG2]	= { 0, 0, 0, 0, 2, 3, 3, 4, 5, 6, 7, 8 };
 static const uint8_t MP_SIZE_MAP_SUBCLASS_COUNTS[MP_SIZE_MAP_MAX_CEIL_LOG2]	= { 1, 1, 1, 1, 4, 4, 8, 8, 8, 8, 8, 8 };
@@ -862,7 +845,7 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_size_to_sc(size_t size)
 	MP_UNLIKELY_IF(size == 0)
 		return 0;
 	i = MP_FLOOR_LOG2(size);
-	MP_UNLIKELY_IF(i > MP_SIZE_MAP_MAX_FLOOR_LOG2)
+	MP_UNLIKELY_IF(i > 11)
 		return MP_SIZE_CLASS_COUNT + MP_CEIL_LOG2(size) - page_size_log2;
 	tmp = 1U << i;
 	step = 1U << MP_SIZE_MAP_ALIGNMENT_LOG2S[i];
@@ -889,12 +872,11 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_sc_to_size_large_log2(uint_
 
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast32_t mp_sc_to_size_small(uint_fast8_t sc)
 {
-	uint_fast32_t desired = MP_SIZE_CLASSES[sc];
 	uint_fast32_t r;
 	uint_fast8_t log2, index;
-	if (sc < 4)
+	if (sc <= 4)
 	{
-		r = (size_t)1 << sc;
+		r = 1U << sc;
 	}
 	else
 	{
@@ -910,9 +892,8 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast32_t mp_sc_to_size_small(uint_fast
 			log2 = 6 + (sc >> 3);
 			index = sc & 7;
 		}
-		r = (1U << log2) + (MP_SIZE_MAP_ALIGNMENT_LOG2S[log2] << index);
+		r = (1U << log2) + (1U << MP_SIZE_MAP_ALIGNMENT_LOG2S[log2]) * index;
 	}
-	MP_INVARIANT(r == desired);
 	return r;
 }
 
@@ -1619,7 +1600,7 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover(mp_flist_node**
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - mp_block_allocator_intrusive_reserved_count_of(allocator->size_class))
-		return mp_free(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
+		return mp_free_sized(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
 	MP_UNLIKELY_IF(!*(const mp_bool*)&allocator->owner->is_active)
 		mp_wcas_list_push(rcache_small + allocator->size_class, allocator);
 	desired = (mp_flist_node*)allocator;
@@ -1645,7 +1626,7 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover_shared(mp_wcas_
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - mp_block_allocator_intrusive_reserved_count_of(allocator->size_class))
-		return mp_free(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
+		return mp_free_sized(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(allocator->owner->is_active))
 		recovered_small = rcache_small + allocator->size_class;
 	mp_wcas_list_push(recovered_small, allocator);
@@ -2306,14 +2287,26 @@ MP_ATTR void* MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size)
 	MP_LIKELY_IF(r != NULL)
 	{
 		(void)memcpy(r, ptr, old_size);
-		mp_free(ptr, old_size);
+		mp_free_sized(ptr, old_size);
 	}
 	MP_DEBUG_JUNK_FILL((uint8_t*)r + old_size, new_size - old_size);
 	mp_init_redzone(r, new_size);
 	return r;
 }
 
-MP_ATTR void MP_CALL mp_free(void* ptr, size_t size)
+MP_ATTR void MP_CALL mp_free(void* ptr)
+{
+#ifndef MP_LEGACY_COMPATIBLE
+	MP_UNREACHABLE;
+#endif
+	size_t k;
+	mp_block_allocator* allocator;
+	k = (size_t)ptr;
+	allocator = mp_tcache_find_allocator(ptr);
+	k = (size_t)1 << MP_CLZ(k);
+}
+
+MP_ATTR void MP_CALL mp_free_sized(void* ptr, size_t size)
 {
 	size_t k;
 	mp_fn_free fn;
