@@ -222,18 +222,18 @@ MP_ATTR mp_bool				MP_CALL mp_thread_enabled();
 MP_ATTR void				MP_CALL mp_thread_cleanup();
 
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_malloc(size_t size);
-MP_ATTR mp_bool				MP_CALL mp_resize(void* ptr, size_t old_size, size_t new_size);
-MP_NODISCARD MP_ATTR void*	MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size);
-#ifdef MP_LEGACY_COMPATIBLE
-MP_ATTR void				MP_CALL mp_free(void* ptr);
-#endif
+MP_ATTR mp_bool				MP_CALL mp_resize_sized(void* ptr, size_t old_size, size_t new_size);
+MP_NODISCARD MP_ATTR void*	MP_CALL mp_realloc_sized(void* ptr, size_t old_size, size_t new_size);
 MP_ATTR void				MP_CALL mp_free_sized(void* ptr, size_t size);
+
 MP_ATTR size_t				MP_CALL mp_round_size(size_t size);
 
-//MP_NODISCARD MP_ATTR void*	MP_CALL mp_xmalloc(size_t size, mp_param_list* params, size_t param_count);
-//MP_ATTR mp_bool				MP_CALL mp_xresize(void* ptr, size_t old_size, size_t new_size, mp_param_list* params, size_t param_count);
-//MP_NODISCARD MP_ATTR void*	MP_CALL mp_xrealloc(void* ptr, size_t old_size, size_t new_size, mp_param_list* params, size_t param_count);
-//MP_ATTR void					MP_CALL mp_xfree(void* ptr, size_t size, mp_param_list* params, size_t param_count);
+#ifdef MP_LEGACY_COMPATIBLE
+MP_ATTR size_t				MP_CALL mp_block_size_of(void* ptr);
+MP_ATTR mp_bool				MP_CALL mp_resize(void* ptr, size_t new_size);
+MP_NODISCARD MP_ATTR void*	MP_CALL mp_realloc(void* ptr, size_t new_size);
+MP_ATTR void				MP_CALL mp_free(void* ptr);
+#endif
 
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_tcache_malloc(size_t size, mp_flags flags);
 MP_ATTR mp_bool				MP_CALL mp_tcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
@@ -749,6 +749,9 @@ typedef struct mp_block_allocator
 	uint8_t size_class;
 	mp_atomic_bool linked;
 	size_t free_map[MP_BLOCK_ALLOCATOR_MASK_COUNT];
+#ifdef MP_LEGACY_COMPATIBLE
+	size_t allocator_map[MP_BLOCK_ALLOCATOR_MASK_COUNT];
+#endif
 	MP_SHARED_ATTR mp_atomic_size_t marked_map[MP_BLOCK_ALLOCATOR_MASK_COUNT];
 } mp_block_allocator;
 
@@ -761,6 +764,9 @@ typedef struct mp_block_allocator_intrusive
 	uint8_t size_class;
 	mp_atomic_bool linked;
 	MP_SHARED_ATTR size_t free_map[MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT];
+#ifdef MP_LEGACY_COMPATIBLE
+	MP_SHARED_ATTR size_t allocator_map[MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT];
+#endif
 	MP_SHARED_ATTR mp_atomic_size_t marked_map[MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT];
 } mp_block_allocator_intrusive;
 
@@ -2253,7 +2259,7 @@ MP_ATTR void* MP_CALL mp_malloc(size_t size)
 	return r;
 }
 
-MP_ATTR mp_bool MP_CALL mp_resize(void* ptr, size_t old_size, size_t new_size)
+MP_ATTR mp_bool MP_CALL mp_resize_sized(void* ptr, size_t old_size, size_t new_size)
 {
 	MP_INVARIANT(ptr != NULL);
 	MP_LIKELY_IF(MP_ALIGN_CEIL(old_size, chunk_size / 2) < old_size)
@@ -2262,12 +2268,12 @@ MP_ATTR mp_bool MP_CALL mp_resize(void* ptr, size_t old_size, size_t new_size)
 		return mp_lcache_resize(ptr, old_size, new_size, 0);
 }
 
-MP_ATTR void* MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size)
+MP_ATTR void* MP_CALL mp_realloc_sized(void* ptr, size_t old_size, size_t new_size)
 {
 	void* r;
 	MP_INVARIANT(ptr != NULL);
 	MP_INVARIANT(mp_debug_overflow_check(ptr, old_size));
-	MP_UNLIKELY_IF(mp_resize(ptr, old_size, new_size))
+	MP_UNLIKELY_IF(mp_resize_sized(ptr, old_size, new_size))
 		return ptr;
 	r = mp_malloc(new_size);
 	MP_LIKELY_IF(r != NULL)
@@ -2279,17 +2285,6 @@ MP_ATTR void* MP_CALL mp_realloc(void* ptr, size_t old_size, size_t new_size)
 	mp_init_redzone(r, new_size);
 	return r;
 }
-#ifdef MP_LEGACY_COMPATIBLE
-MP_ATTR void MP_CALL mp_free(void* ptr)
-{
-	MP_UNREACHABLE;
-	size_t k;
-	mp_block_allocator* allocator;
-	k = (size_t)ptr;
-	allocator = mp_tcache_find_allocator(ptr);
-	k = (size_t)1 << MP_CLZ(k);
-}
-#endif
 
 MP_ATTR void MP_CALL mp_free_sized(void* ptr, size_t size)
 {
@@ -2304,6 +2299,31 @@ MP_ATTR void MP_CALL mp_free_sized(void* ptr, size_t size)
 		fn = mp_lcache_free;
 	fn(ptr, k);
 }
+
+#ifdef MP_LEGACY_COMPATIBLE
+MP_ATTR size_t MP_CALL mp_block_size_of(void* ptr)
+{
+	abort();
+}
+
+MP_ATTR mp_bool MP_CALL mp_resize(void* ptr, size_t new_size)
+{
+	size_t old_size = mp_block_size_of(ptr);
+	return mp_resize_sized(ptr, old_size, new_size);
+}
+
+MP_NODISCARD MP_ATTR void* MP_CALL mp_realloc(void* ptr, size_t new_size)
+{
+	size_t old_size = mp_block_size_of(ptr);
+	return mp_realloc_sized(ptr, old_size, new_size);
+}
+
+MP_ATTR void MP_CALL mp_free(void* ptr)
+{
+	size_t size = mp_block_size_of(ptr);
+	return mp_free_sized(ptr, size);
+}
+#endif
 
 MP_ATTR size_t MP_CALL mp_round_size(size_t size)
 {
