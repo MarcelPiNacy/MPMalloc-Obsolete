@@ -736,11 +736,6 @@ typedef struct mp_persistent_node
 } mp_persistent_node;
 typedef MP_ATOMIC(mp_persistent_node*) mp_persistent_allocator;
 
-enum
-{
-	MP_BLOCK_ALLOCATOR_FRAGMENTED_BIT = 0
-};
-
 typedef struct mp_block_allocator
 {
 	MP_SHARED_ATTR struct mp_block_allocator* next;
@@ -1754,6 +1749,7 @@ static void* mp_trie_insert(mp_trie* trie, size_t key, uint_fast8_t value_size_l
 	return leaf;
 }
 
+#ifndef MP_DISABLE_CHUNK_TRIE_SHORTCUT
 typedef struct mp_trie_shortcut_ctrl
 {
 	MP_ALIGNAS(8) uint8_t count;
@@ -1855,6 +1851,7 @@ MP_INLINE_ALWAYS static size_t mp_trie_shortcut_erase(mp_trie_shortcut* shortcut
 	(void)MP_ATOMIC_CMPXCHG_REL_UPTR(&shortcut->keys + i, &key, 0);
 	return (size_t)hash * 7 + ctrl.count - 1;
 }
+#endif
 #endif
 
 // ================================================================
