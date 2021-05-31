@@ -315,6 +315,8 @@ MP_EXTERN_C_END
 #define MP_ALIGN_CEIL_MASK(VALUE, MASK) ((VALUE + (MASK)) & ~(MASK))
 #define MP_ALIGN_FLOOR(VALUE, ALIGNMENT) MP_ALIGN_FLOOR_MASK(VALUE, (ALIGNMENT) - 1)
 #define MP_ALIGN_CEIL(VALUE, ALIGNMENT) MP_ALIGN_CEIL_MASK(VALUE, (ALIGNMENT) - 1)
+#define MP_OPTIONAL_U8(VALUE, CONDITION) ((uint8_t)(VALUE) & (uint8_t)-(int8_t)(CONDITION))
+#define MP_SELECT_U8(CONDITION, ON_TRUE, ON_FALSE) (MP_OPTIONAL(ON_TRUE, (CONDITION)) | MP_OPTIONAL(ON_FALSE, !(CONDITION)))
 #define MP_OPTIONAL(VALUE, CONDITION) ((size_t)(VALUE) & (size_t)-(ptrdiff_t)(CONDITION))
 #define MP_SELECT(CONDITION, ON_TRUE, ON_FALSE) (MP_OPTIONAL(ON_TRUE, (CONDITION)) | MP_OPTIONAL(ON_FALSE, !(CONDITION)))
 #define MP_IS_ALIGNED(PTR, ALIGNMENT) (((size_t)(PTR) & ((size_t)(ALIGNMENT) - (size_t)1)) == 0)
@@ -882,26 +884,15 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast32_t mp_sc_to_size_small(uint_fast
 {
 	uint_fast32_t r;
 	uint_fast8_t log2, index;
+	uint_fast8_t a, b;
+	mp_bool flag;
 	if (sc <= 4)
-	{
-		r = 1U << sc;
-	}
-	else
-	{
-		if (sc < 12)
-		{
-			sc -= 4;
-			log2 = 4 + (sc >> 2);
-			index = sc & 3;
-		}
-		else
-		{
-			sc -= 12;
-			log2 = 6 + (sc >> 3);
-			index = sc & 7;
-		}
-		r = (1U << log2) + (1U << MP_SIZE_MAP_ALIGNMENT_LOG2S[log2]) * index;
-	}
+		return 1U << sc;
+	flag = sc < 12;
+	sc -= MP_SELECT_U8(flag, 4, 12);
+	a = MP_SELECT_U8(flag, 4 + (sc >> 2), 6 + (sc >> 3));
+	b = sc & MP_SELECT_U8(flag, 3, 7);
+	r = (1U << a) + (1U << MP_SIZE_MAP_ALIGNMENT_LOG2S[a]) * b;
 	return r;
 }
 
@@ -1041,14 +1032,6 @@ MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 	(void)DiscardVirtualMemory(ptr, size);
 }
 
-MP_INLINE_ALWAYS static void mp_os_prefetch_pages(void* ptr, size_t size)
-{
-	WIN32_MEMORY_RANGE_ENTRY entries;
-	entries.NumberOfBytes = size;
-	entries.VirtualAddress = ptr;
-	(void)PrefetchVirtualMemory(GetCurrentProcess(), 1, &entries, 0);
-}
-
 #elif defined(MP_TARGET_LINUX)
 
 static int mmap_protection;
@@ -1085,11 +1068,6 @@ MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 {
 	MP_INVARIANT(ptr != NULL);
 	(void)madvise(ptr, size, MADV_DONTNEED);
-}
-
-MP_INLINE_ALWAYS static void mp_os_prefetch_pages(void* ptr, size_t size)
-{
-	(void)madvise(ptr, size, MADV_WILLNEED);
 }
 
 #endif
@@ -1482,7 +1460,7 @@ MP_PURE MP_INLINE_ALWAYS static uint_fast32_t mp_block_allocator_intrusive_index
 	return (uint_fast32_t)(((size_t)((uint8_t*)ptr - (uint8_t*)allocator)) / mp_sc_to_size(allocator->size_class));
 }
 
-MP_INLINE_ALWAYS static mp_bool mp_block_allocator_owns(mp_block_allocator* allocator, void* ptr)
+MP_PURE MP_INLINE_ALWAYS static mp_bool mp_block_allocator_owns(mp_block_allocator* allocator, void* ptr)
 {
 	uint_fast32_t index, mask_index, bit_index;
 	MP_INVARIANT(mp_is_valid_block_allocator(allocator));
@@ -1534,7 +1512,9 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allo
 {
 	void* r;
 	uint_fast32_t mask_index, bit_index;
-	MP_INVARIANT(allocator->linked != 0);
+#ifdef MP_DEBUG
+	assert(allocator->linked != 0);
+#endif
 	MP_INVARIANT(allocator->free_count != 0);
 	for (mask_index = 0; mask_index != MP_BLOCK_ALLOCATOR_MASK_COUNT; ++mask_index)
 		MP_UNLIKELY_IF(allocator->free_map[mask_index] != 0)
@@ -1555,7 +1535,9 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_alloc
 {
 	void* r;
 	uint_fast32_t mask_index, bit_index;
-	MP_INVARIANT(allocator->linked != 0);
+#ifdef MP_DEBUG
+	assert(allocator->linked != 0);
+#endif
 	MP_INVARIANT(allocator->free_count != 0);
 	for (mask_index = 0; mask_index != MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT; ++mask_index)
 		MP_UNLIKELY_IF(allocator->free_map[mask_index] != 0)
@@ -2272,7 +2254,9 @@ MP_ATTR void* MP_CALL mp_realloc_sized(void* ptr, size_t old_size, size_t new_si
 {
 	void* r;
 	MP_INVARIANT(ptr != NULL);
-	MP_INVARIANT(mp_debug_overflow_check(ptr, old_size));
+#ifdef MP_DEBUG
+	assert(mp_debug_overflow_check(ptr, old_size));
+#endif
 	MP_UNLIKELY_IF(mp_resize_sized(ptr, old_size, new_size))
 		return ptr;
 	r = mp_malloc(new_size);
@@ -2293,7 +2277,9 @@ MP_ATTR void MP_CALL mp_free_sized(void* ptr, size_t size)
 	MP_INVARIANT(ptr != NULL);
 	k = mp_round_size(MP_SIZE_WITH_REDZONE(size));
 	MP_INVARIANT(k >= MP_SIZE_WITH_REDZONE(size));
-	MP_INVARIANT(mp_debug_overflow_check(ptr, size));
+#ifdef MP_DEBUG
+	assert(mp_debug_overflow_check(ptr, size));
+#endif
 	fn = mp_tcache_free;
 	MP_LIKELY_IF(k > mp_tcache_max_size())
 		fn = mp_lcache_free;
