@@ -883,7 +883,6 @@ MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast8_t mp_sc_to_size_large_log2(uint_
 MP_ULTRAPURE MP_INLINE_ALWAYS static uint_fast32_t mp_sc_to_size_small(uint_fast8_t sc)
 {
 	uint_fast32_t r;
-	uint_fast8_t log2, index;
 	uint_fast8_t a, b;
 	mp_bool flag;
 	if (sc <= 4)
