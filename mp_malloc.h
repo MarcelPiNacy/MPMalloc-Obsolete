@@ -190,14 +190,14 @@ typedef struct mp_init_options
 	const mp_backend_options* backend;
 } mp_init_options;
 
-typedef struct mp_heap_stats
+typedef struct mp_usage_stats
 {
 	size_t malloc_count;
 	size_t free_count;
 	size_t active_memory;
 	size_t total_memory;
 	size_t peak_memory;
-} mp_heap_stats;
+} mp_usage_stats;
 
 typedef struct mp_debug_options
 {
@@ -207,11 +207,15 @@ typedef struct mp_debug_options
 	mp_fn_debug_error error;
 } mp_debug_options;
 
-typedef struct mp_param_list
+typedef struct mp_ratio
 {
-	size_t alignment;
-	mp_malloc_flag_bits flags;
-} mp_param_list;
+	size_t numerator, denominator;
+} mp_ratio;
+
+typedef struct mp_purge_options
+{
+	mp_ratio goal_unused_ratio;
+} mp_purge_options;
 
 MP_ATTR mp_bool				MP_CALL mp_init(const mp_init_options* options);
 MP_ATTR mp_bool				MP_CALL mp_init_default();
@@ -234,6 +238,11 @@ MP_ATTR mp_bool				MP_CALL mp_resize(void* ptr, size_t new_size);
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_realloc(void* ptr, size_t new_size);
 MP_ATTR void				MP_CALL mp_free(void* ptr);
 #endif
+
+/*
+MP_ATTR size_t				MP_CALL mp_purge(const mp_purge_options* options);
+MP_ATTR size_t				MP_CALL mp_purge_default();
+*/
 
 MP_NODISCARD MP_ATTR void*	MP_CALL mp_tcache_malloc(size_t size, mp_flags flags);
 MP_ATTR mp_bool				MP_CALL mp_tcache_resize(void* ptr, size_t old_size, size_t new_size, mp_flags flags);
@@ -611,12 +620,6 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 #define MP_PTRS_PER_QWORD (8 / MP_PTR_SIZE)
 #define MP_PTRS_PER_DWORD (4 / MP_PTR_SIZE)
 
-#ifdef MP_DEBUG
-#define MP_JUNKPTR_CHECK(PTR) MP_INVARIANT(memcmp(&(PTR), &junkptr, MP_PTR_SIZE) != 0)
-#else
-#define MP_JUNKPTR_CHECK(PTR)
-#endif
-
 // ================================================================
 //	MISCELLANEOUS
 // ================================================================
@@ -739,7 +742,15 @@ typedef MP_ATOMIC(mp_persistent_node*) mp_persistent_allocator;
 typedef struct mp_block_allocator
 {
 	MP_SHARED_ATTR struct mp_block_allocator* next;
+#ifdef MP_LEGACY_COMPATIBLE
+	union
+	{
+		struct mp_tcache* owner;
+		size_t large_allocation_size;
+	};
+#else
 	struct mp_tcache* owner;
+#endif
 	uint8_t* buffer;
 	uint32_t free_count;
 	uint16_t flags;
@@ -767,15 +778,6 @@ typedef struct mp_block_allocator_intrusive
 	MP_SHARED_ATTR mp_atomic_size_t marked_map[MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT];
 } mp_block_allocator_intrusive;
 
-typedef struct mp_tcache_stats
-{
-	size_t malloc_count;
-	size_t free_count;
-	size_t active_memory;
-	size_t total_memory;
-	size_t peak_memory;
-} mp_tcache_stats;
-
 typedef struct mp_tcache
 {
 	MP_SHARED_ATTR mp_block_allocator_intrusive** bins;
@@ -783,7 +785,6 @@ typedef struct mp_tcache
 	mp_wcas_list* recovered_small;
 	mp_wcas_list* recovered_large;
 	struct mp_tcache* next;
-	mp_tcache_stats stats;
 	mp_atomic_bool is_active;
 } mp_tcache;
 
@@ -1082,7 +1083,6 @@ static mp_fn_purge backend_purge = mp_os_purge;
 
 MP_INLINE_ALWAYS static void mp_wcas_list_push(mp_wcas_list* head, void* ptr)
 {
-	MP_JUNKPTR_CHECK(ptr);
 	mp_flist_node* new_head;
 	mp_wcas_list_head prior, desired;
 	new_head = (mp_flist_node*)ptr;
@@ -1090,7 +1090,6 @@ MP_INLINE_ALWAYS static void mp_wcas_list_push(mp_wcas_list* head, void* ptr)
 	MP_SPIN_LOOP
 	{
 		MP_ATOMIC_WLOAD_ACQ(head, prior);
-		MP_JUNKPTR_CHECK(prior.head);
 		new_head->next = prior.head;
 		desired.counter = prior.counter + 1;
 		MP_LIKELY_IF(MP_ATOMIC_WCMPXCHG_ACQ(head, &prior, &desired))
@@ -1115,7 +1114,6 @@ MP_INLINE_ALWAYS static void* mp_wcas_list_pop(mp_wcas_list* head)
 		r = prior.head;
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
-		MP_JUNKPTR_CHECK(r);
 #ifdef MP_64BIT
 		MP_PREFETCH(r);
 #endif
@@ -1136,7 +1134,6 @@ MP_INLINE_NEVER static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 		r = prior.head;
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
-		MP_JUNKPTR_CHECK(r);
 		MP_PREFETCH(prior.head);
 		desired.head = NULL;
 		desired.counter = prior.counter + 1;
@@ -1151,7 +1148,6 @@ MP_INLINE_NEVER static void* mp_wcas_list_pop_all(mp_wcas_list* head)
 
 MP_INLINE_ALWAYS static void mp_chunk_list_push(mp_chunk_list* head, void* ptr)
 {
-	MP_JUNKPTR_CHECK(ptr);
 #ifndef MP_STRICT_CHUNK_FREELIST
 	mp_flist_node* new_head;
 	mp_chunk_list_head prior, desired;
@@ -1160,7 +1156,6 @@ MP_INLINE_ALWAYS static void mp_chunk_list_push(mp_chunk_list* head, void* ptr)
 	{
 		prior = MP_ATOMIC_LOAD_ACQ_UPTR(head);
 		new_head->next = (mp_flist_node*)(prior & ~chunk_size_mask);
-		MP_JUNKPTR_CHECK(new_head->next);
 		desired = (size_t)new_head | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
 		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_REL_UPTR(head, &prior, desired))
 			break;
@@ -1181,7 +1176,6 @@ MP_INLINE_ALWAYS static void* mp_chunk_list_pop(mp_chunk_list* head)
 		r = (mp_flist_node*)(prior & ~chunk_size_mask);
 		MP_UNLIKELY_IF(r == NULL)
 			return NULL;
-		MP_JUNKPTR_CHECK(r);
 		desired = (size_t)r->next | (((prior & chunk_size_mask) + 1) & chunk_size_mask);
 		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_WEAK_ACQ_UPTR(head, &prior, desired))
 			return r;
@@ -1275,7 +1269,6 @@ MP_INLINE_ALWAYS static mp_tcache* mp_tcache_acquire_fast()
 		MP_ATOMIC_ACQUIRE_FENCE;
 		MP_UNLIKELY_IF(prior.head == NULL)
 			return NULL;
-		MP_JUNKPTR_CHECK(prior.head);
 		MP_PREFETCH(prior.head);
 		desired.head = prior.head->next;
 		desired.generation = prior.generation + 1;
@@ -1521,7 +1514,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allo
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim_noinline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	r = allocator->buffer + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) << mp_sc_to_size_large_log2(allocator->size_class));
-	MP_INVARIANT(r < allocator->buffer + ((size_t)MP_BLOCK_ALLOCATOR_MAX_CAPACITY << mp_sc_to_size_large_log2(allocator->size_class)));
+	MP_INVARIANT((uint8_t*)r < allocator->buffer + ((size_t)MP_BLOCK_ALLOCATOR_MAX_CAPACITY << mp_sc_to_size_large_log2(allocator->size_class)));
 	return r;
 }
 
@@ -1545,8 +1538,8 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_alloc
 		allocator->free_count += mp_block_allocator_reclaim_noinline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	r = (uint8_t*)allocator + ((((size_t)mask_index << MP_PTR_BITS_LOG2) | bit_index) * mp_sc_to_size(allocator->size_class));
 	MP_INVARIANT(
-		r >= (uint8_t*)allocator + mp_block_allocator_intrusive_reserved_count_of(allocator->size_class) * mp_sc_to_size(allocator->size_class) &&
-		r < (uint8_t*)allocator + (MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY * mp_sc_to_size(allocator->size_class)));
+		(uint8_t*)r >= (uint8_t*)allocator + mp_block_allocator_intrusive_reserved_count_of(allocator->size_class) * mp_sc_to_size(allocator->size_class) &&
+		(uint8_t*)r < (uint8_t*)allocator + (MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY * mp_sc_to_size(allocator->size_class)));
 	return r;
 }
 
@@ -1560,7 +1553,10 @@ MP_INLINE_NEVER static void mp_block_allocator_recover(mp_flist_node** bin, mp_b
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_MAX_CAPACITY)
-		return mp_lcache_free(allocator, chunk_size);
+	{
+		mp_lcache_free(allocator, chunk_size);
+		return;
+	}
 	MP_UNLIKELY_IF(!*(const mp_bool*)&allocator->owner->is_active)
 		mp_wcas_list_push(rcache_large + mp_sc_large_bin_index(allocator->size_class), allocator);
 	desired = (mp_flist_node*)allocator;
@@ -1575,7 +1571,10 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover(mp_flist_node**
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - mp_block_allocator_intrusive_reserved_count_of(allocator->size_class))
-		return mp_free_sized(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
+	{
+		mp_free_sized(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
+		return;
+	}
 	MP_UNLIKELY_IF(!*(const mp_bool*)&allocator->owner->is_active)
 		mp_wcas_list_push(rcache_small + allocator->size_class, allocator);
 	desired = (mp_flist_node*)allocator;
@@ -1589,7 +1588,10 @@ MP_INLINE_NEVER static void mp_block_allocator_recover_shared(mp_wcas_list* reco
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_MAX_CAPACITY)
-		return mp_lcache_free(allocator, chunk_size);
+	{
+		mp_lcache_free(allocator, chunk_size);
+		return;
+	}
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(allocator->owner->is_active))
 		recovered_small = rcache_large + mp_sc_large_bin_index(allocator->size_class);
 	mp_wcas_list_push(recovered_small, allocator);
@@ -1601,7 +1603,10 @@ MP_INLINE_NEVER static void mp_block_allocator_intrusive_recover_shared(mp_wcas_
 		allocator->free_count += mp_block_allocator_reclaim_inline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
 	MP_INVARIANT(allocator->free_count != 0);
 	MP_UNLIKELY_IF(allocator->free_count == MP_BLOCK_ALLOCATOR_INTRUSIVE_MAX_CAPACITY - mp_block_allocator_intrusive_reserved_count_of(allocator->size_class))
-		return mp_free_sized(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
+	{
+		mp_free_sized(allocator, mp_chunk_size_of(mp_sc_to_size(allocator->size_class)));
+		return;
+	}
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(allocator->owner->is_active))
 		recovered_small = rcache_small + allocator->size_class;
 	mp_wcas_list_push(recovered_small, allocator);
@@ -1656,6 +1661,48 @@ MP_INLINE_ALWAYS static void mp_block_allocator_free_shared(mp_block_allocator* 
 	MP_UNLIKELY_IF(!MP_ATOMIC_TEST_ACQ(&allocator->linked) && MP_ATOMIC_TAS_ACQ(&allocator->linked))
 		mp_block_allocator_recover_shared(allocator->owner->recovered_large + mp_sc_large_bin_index(allocator->size_class), allocator);
 }
+
+#ifdef MP_LEGACY_COMPATIBLE
+MP_INLINE_ALWAYS static void mp_block_allocator_register_allocator(mp_block_allocator* allocator, void* ptr)
+{
+	uint_fast32_t index, mask_index, bit_index;
+	MP_INVARIANT(mp_block_allocator_owns(allocator, ptr));
+	index = mp_block_allocator_index_of(allocator, ptr);
+	mask_index = index >> MP_PTR_BITS_LOG2;
+	bit_index = index & MP_PTR_BITS_MASK;
+	MP_BS(allocator->allocator_map[mask_index], bit_index);
+}
+
+MP_INLINE_ALWAYS static void mp_block_allocator_deregister_allocator(mp_block_allocator_intrusive* allocator, void* ptr)
+{
+	uint_fast32_t index, mask_index, bit_index;
+	MP_INVARIANT(mp_block_allocator_intrusive_owns(allocator, ptr));
+	index = mp_block_allocator_intrusive_index_of(allocator, ptr);
+	mask_index = index >> MP_PTR_BITS_LOG2;
+	bit_index = index & MP_PTR_BITS_MASK;
+	MP_BR(allocator->allocator_map[mask_index], bit_index);
+}
+
+MP_INLINE_ALWAYS static void mp_block_allocator_register_allocator(mp_block_allocator* allocator, void* ptr)
+{
+	uint_fast32_t index, mask_index, bit_index;
+	MP_INVARIANT(mp_block_allocator_owns(allocator, ptr));
+	index = mp_block_allocator_index_of(allocator, ptr);
+	mask_index = index >> MP_PTR_BITS_LOG2;
+	bit_index = index & MP_PTR_BITS_MASK;
+	MP_BS(allocator->allocator_map[mask_index], bit_index);
+}
+
+MP_INLINE_ALWAYS static void mp_block_allocator_deregister_allocator(mp_block_allocator_intrusive* allocator, void* ptr)
+{
+	uint_fast32_t index, mask_index, bit_index;
+	MP_INVARIANT(mp_block_allocator_intrusive_owns(allocator, ptr));
+	index = mp_block_allocator_intrusive_index_of(allocator, ptr);
+	mask_index = index >> MP_PTR_BITS_LOG2;
+	bit_index = index & MP_PTR_BITS_MASK;
+	MP_BR(allocator->allocator_map[mask_index], bit_index);
+}
+#endif
 
 // ================================================================
 //	64-BIT CHUNK DIGITAL TREE
@@ -1852,6 +1899,7 @@ MP_INLINE_ALWAYS static size_t mp_trie_shortcut_erase(mp_trie_shortcut* shortcut
 	return (size_t)hash * 7 + ctrl.count - 1;
 }
 #endif
+
 #endif
 
 // ================================================================
@@ -1865,11 +1913,10 @@ static size_t lcache_bin_count;
 static mp_chunk_list* lcache_bins;
 #else
 static mp_trie lcache_bins;
-MP_SHARED_ATTR static MP_ATOMIC(mp_chunk_list) single_chunk_list;
+MP_SHARED_ATTR static mp_chunk_list single_chunk_list;
 #endif
 MP_SHARED_ATTR static MP_ATOMIC(size_t) lcache_total_memory;
 MP_SHARED_ATTR static MP_ATOMIC(size_t) lcache_active_memory;
-MP_SHARED_ATTR static MP_ATOMIC(size_t) lcache_peak_memory;
 
 MP_INLINE_ALWAYS static void mp_lcache_init()
 {
@@ -1923,6 +1970,13 @@ MP_INLINE_ALWAYS static mp_chunk_list* mp_lcache_insert_bin(size_t size)
 	--size;
 	return (mp_chunk_list*)mp_trie_insert(&lcache_bins, size, MP_CEIL_LOG2(sizeof(mp_chunk_list)));
 #endif
+}
+
+MP_ULTRAPURE MP_INLINE_ALWAYS static size_t mp_purge_priority(size_t size, uint_fast16_t generation, uint_fast16_t frequency)
+{
+	size |= (size_t)generation << (chunk_size_log2 / 2);
+	size |= (size_t)frequency;
+	return size;
 }
 
 // ================================================================
@@ -2286,6 +2340,46 @@ MP_ATTR void MP_CALL mp_free_sized(void* ptr, size_t size)
 MP_ATTR size_t MP_CALL mp_block_size_of(void* ptr)
 {
 	abort();
+	mp_block_allocator* allocator;
+	mp_block_allocator_intrusive* allocator_intrusive;
+	mp_bool large;
+	size_t k, n;
+	MP_INVARIANT(ptr != NULL);
+	k = (size_t)ptr;
+	k = (size_t)1 << MP_CTZ(k);
+	large = k >= chunk_size;
+	MP_UNLIKELY_IF(large)
+	{
+		allocator = mp_tcache_find_allocator(ptr);
+		large = allocator != NULL && allocator->large_allocation_size == 0;
+	}
+	MP_UNLIKELY_IF(large)
+	{
+		return allocator->large_allocation_size;
+	}
+	else
+	{
+		MP_LIKELY_IF(allocator != NULL)
+		{
+			k = mp_block_allocator_index_of(allocator, ptr);
+			n = mp_sc_to_size_large_log2(allocator->size_class);
+			MP_LIKELY_IF(!MP_BT(allocator->allocator_map[k >> MP_PTR_BITS_LOG2], k & MP_PTR_BITS_MASK))
+				return (size_t)1 << n;
+			allocator_intrusive = (mp_block_allocator_intrusive*)(allocator->buffer + (k << n));
+		}
+		else
+		{
+			allocator_intrusive = (mp_block_allocator_intrusive*)MP_ALIGN_FLOOR_MASK((size_t)ptr, chunk_size_mask);
+		}
+		for (;;)
+		{
+			k = mp_block_allocator_intrusive_index_of(allocator_intrusive, ptr);
+			n = mp_sc_to_size_small(allocator_intrusive->size_class);
+			MP_LIKELY_IF(!MP_BT(allocator_intrusive->allocator_map[k >> MP_PTR_BITS_LOG2], k& MP_PTR_BITS_MASK))
+				return n;
+			allocator_intrusive = (mp_block_allocator_intrusive*)((uint8_t*)allocator_intrusive + k * n);
+		}
+	}
 }
 
 MP_ATTR mp_bool MP_CALL mp_resize(void* ptr, size_t new_size)
@@ -2315,6 +2409,33 @@ MP_ATTR size_t MP_CALL mp_round_size(size_t size)
 		return mp_lcache_round_size(size);
 }
 
+/*
+MP_ATTR size_t MP_CALL mp_purge(const mp_purge_options* options)
+{
+	size_t total, active, idle, target;
+	do
+	{
+		total = MP_ATOMIC_LOAD_ACQ_UPTR(lcache_total_memory);
+		active = MP_ATOMIC_LOAD_ACQ_UPTR(lcache_active_memory);
+	} while (active > total);
+	idle = total - active;
+	target = (idle * options->goal_unused_ratio.numerator) / options->goal_unused_ratio.denominator;
+	return target;
+}
+
+MP_ATTR size_t MP_CALL mp_purge_default()
+{
+	size_t total, active, idle, target;
+	do
+	{
+		total = MP_ATOMIC_LOAD_ACQ_UPTR(lcache_total_memory);
+		active = MP_ATOMIC_LOAD_ACQ_UPTR(lcache_active_memory);
+	} while (active > total);
+	idle = total - active;
+	target = idle / 2;
+	return target;
+}
+*/
 MP_ATTR void* MP_CALL mp_tcache_malloc(size_t size, mp_flags flags)
 {
 	void* r;
@@ -2356,7 +2477,7 @@ MP_ATTR void MP_CALL mp_tcache_free(void* ptr, size_t size)
 	else
 	{
 		allocator = mp_tcache_find_allocator(ptr);
-		MP_INVARIANT(allocator != NULL);
+		MP_INVARIANT(allocator != NULL && allocator->buffer != NULL);
 		MP_LIKELY_IF(allocator->owner == this_tcache)
 			mp_block_allocator_free(allocator, ptr);
 		else
@@ -2399,7 +2520,9 @@ MP_ATTR void* MP_CALL mp_lcache_malloc(size_t size, mp_flags flags)
 {
 	void* r;
 	mp_chunk_list* bin;
-	size_t total, peak;
+#ifdef MP_LEGACY_COMPATIBLE
+	mp_block_allocator* size_info;
+#endif
 	MP_INVARIANT((size & chunk_size_mask) == 0);
 	r = NULL;
 	bin = mp_lcache_find_bin(size);
@@ -2409,15 +2532,13 @@ MP_ATTR void* MP_CALL mp_lcache_malloc(size_t size, mp_flags flags)
 		r = mp_backend_malloc(size);
 	MP_UNLIKELY_IF(r == NULL)
 		return NULL;
+#ifdef MP_LEGACY_COMPATIBLE
+	size_info = mp_tcache_insert_allocator(r);
+	size_info->buffer = NULL;
+	size_info->large_allocation_size = MP_ALIGN_CEIL_MASK(size, chunk_size_mask);
+#endif
 	(void)MP_ATOMIC_FAA_REL(&lcache_active_memory, size);
-	total = MP_ATOMIC_FAA_REL(&lcache_total_memory, size);
-	total += size;
-	MP_SPIN_LOOP
-	{
-		peak = MP_ATOMIC_LOAD_ACQ_UPTR(&lcache_peak_memory);
-		MP_LIKELY_IF(peak > total || MP_ATOMIC_CMPXCHG_REL_UPTR(&lcache_peak_memory, &peak, total))
-			break;
-	}
+	(void)MP_ATOMIC_FAA_REL(&lcache_total_memory, size);
 	MP_DEBUG_JUNK_FILL(r, size);
 	return r;
 }
@@ -2435,6 +2556,11 @@ MP_ATTR void MP_CALL mp_lcache_free(void* ptr, size_t size)
 	mp_chunk_list* bin;
 	bin = mp_lcache_insert_bin(size);
 	MP_INVARIANT(bin != NULL);
+#ifdef MP_LEGACY_COMPATIBLE
+	size_info = mp_tcache_find_allocator(r);
+	MP_INVARIANT(size_info != NULL);
+	size_info->large_allocation_size = 0;
+#endif
 	mp_chunk_list_push(bin, ptr);
 	(void)MP_ATOMIC_FAS_REL(&lcache_active_memory, size);
 }
@@ -2622,7 +2748,7 @@ MP_ATTR mp_bool MP_CALL mp_debug_validate_memory(const void* ptr, size_t size)
 	else
 	{
 		allocator = mp_tcache_find_allocator(ptr);
-		MP_UNLIKELY_IF(allocator == NULL)
+		MP_UNLIKELY_IF(allocator == NULL || allocator->buffer == NULL)
 			return MP_FALSE;
 		return mp_is_valid_block_allocator(allocator);
 	}

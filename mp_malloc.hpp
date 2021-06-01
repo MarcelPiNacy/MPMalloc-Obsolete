@@ -23,7 +23,7 @@
 namespace mp
 {
 	using init_options = mp_init_options;
-	using memory_stats = mp_heap_stats;
+	using usage_stats = mp_usage_stats;
 	using debug_options = mp_debug_options;
 
 	MP_ATTR inline bool			MP_CALL init(const init_options& options) noexcept { return mp_init(&options); }
