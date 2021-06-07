@@ -17,8 +17,8 @@
 */
 
 #ifndef MP_CXX_API
-#include "mp_malloc.h"
 #define MP_CXX_API
+#include "mp_malloc.h"
 
 namespace mp
 {
@@ -35,6 +35,11 @@ namespace mp
 	MP_ATTR inline bool			MP_CALL resize(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_resize_sized(ptr, old_size, new_size); }
 	MP_ATTR inline void*		MP_CALL realloc(void* ptr, size_t old_size, size_t new_size) noexcept { return mp_realloc_sized(ptr, old_size, new_size); }
 	MP_ATTR inline void			MP_CALL free(void* ptr, size_t size) noexcept { mp_free_sized(ptr, size); }
+#ifdef MP_LEGACY_COMPATIBLE
+	MP_ATTR inline bool			MP_CALL resize(void* ptr, size_t new_size) noexcept { return mp_resize(ptr, new_size); }
+	MP_ATTR inline void*		MP_CALL realloc(void* ptr, size_t new_size) noexcept { return mp_realloc(ptr, new_size); }
+	MP_ATTR inline void			MP_CALL free(void* ptr) noexcept { mp_free(ptr); }
+#endif
 	MP_ATTR inline size_t		MP_CALL round_size(size_t size) noexcept { return mp_round_size(size); }
 
 	namespace tcache
