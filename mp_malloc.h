@@ -154,22 +154,15 @@ typedef _Bool mp_bool;
 enum { MP_FALSE, MP_TRUE };
 
 MP_EXTERN_C_BEGIN
-typedef enum mp_init_flag_bits
-{
-	MP_INIT_ENABLE_PAGE_MESHING = 1U << 30,
-	MP_INIT_ENABLE_LARGE_PAGES = 1U << 31
-} mp_init_flag_bits;
 
-typedef uint32_t mp_init_flags;
+#define MP_INIT_ENABLE_PAGE_MESHING	(UINT64_C(1) << 0)
+#define MP_INIT_ENABLE_LARGE_PAGES	(UINT64_C(1) << 1)
+typedef uint64_t mp_init_flags;
 
-typedef enum mp_malloc_flag_bits
-{
-	MP_NO_FALLBACK = 1U,
-	MP_NO_SYSCALL = 2U,
-	MP_NO_ATOMICS = 4U,
-} mp_malloc_flag_bits;
-
-typedef uint32_t mp_flags;
+#define MP_FLAGS_NO_FALLBACK	(UINT64_C(1) << 0)
+#define MP_FLAGS_NO_SYSCALL		(UINT64_C(1) << 1)
+#define MP_FLAGS_NO_ATOMICS		(UINT64_C(1) << 2)
+typedef uint64_t mp_flags;
 
 typedef mp_bool(MP_PTR* mp_fn_init)(const struct mp_init_options*);
 typedef void(MP_PTR* mp_fn_cleanup)();
@@ -2057,7 +2050,7 @@ static void* mp_tcache_malloc_small_fast(mp_tcache* tcache, size_t size, uint_fa
 	}
 	else
 	{
-		MP_UNLIKELY_IF(flags & MP_NO_FALLBACK)
+		MP_UNLIKELY_IF(flags & MP_FLAGS_NO_FALLBACK)
 			return NULL;
 		return mp_tcache_malloc_small_slow(tcache, size, sc);
 	}
@@ -2117,7 +2110,7 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 	}
 	else
 	{
-		MP_UNLIKELY_IF(flags & MP_NO_FALLBACK)
+		MP_UNLIKELY_IF(flags & MP_FLAGS_NO_FALLBACK)
 			return NULL;
 		return mp_tcache_malloc_large_slow(tcache, size, sc);
 	}
@@ -2509,7 +2502,7 @@ MP_ATTR void* MP_CALL mp_lcache_malloc(size_t size, mp_flags flags)
 	bin = mp_lcache_find_bin(size);
 	MP_LIKELY_IF(bin != NULL)
 		r = mp_chunk_list_pop(bin);
-	MP_UNLIKELY_IF(r == NULL && !(flags & MP_NO_FALLBACK))
+	MP_UNLIKELY_IF(r == NULL && !(flags & MP_FLAGS_NO_FALLBACK))
 		r = mp_backend_malloc(size);
 	MP_UNLIKELY_IF(r == NULL)
 		return NULL;
