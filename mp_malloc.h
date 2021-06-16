@@ -256,6 +256,8 @@ MP_NODISCARD MP_ATTR void*	MP_CALL mp_realloc_sized(void* ptr, size_t old_size, 
 MP_ATTR void				MP_CALL mp_free_sized(void* ptr, size_t size);
 // Returns the actual size of a memory block of a given size.
 MP_ATTR size_t				MP_CALL mp_round_size(size_t size);
+// Returns the alignment of a memory block of a given size.
+MP_ATTR size_t				MP_CALL mp_min_alignment(size_t size);
 
 #ifdef MP_LEGACY_COMPATIBLE
 // (MP_LEGACY_COMPATIBLE) Returns the size of the memory block by a given address.
@@ -2403,10 +2405,18 @@ MP_ATTR void MP_CALL mp_free(void* ptr)
 
 MP_ATTR size_t MP_CALL mp_round_size(size_t size)
 {
-	MP_LIKELY_IF(size <= mp_tcache_max_size())
+	if (size <= mp_tcache_max_size())
 		return mp_tcache_round_size(size);
 	else
 		return mp_lcache_round_size(size);
+}
+
+MP_ATTR size_t MP_CALL mp_min_alignment(size_t size)
+{
+	if (size <= mp_tcache_max_size())
+		return mp_tcache_round_size(size);
+	else
+		return chunk_size;
 }
 
 MP_ATTR void* MP_CALL mp_tcache_malloc(size_t size, mp_flags flags)
