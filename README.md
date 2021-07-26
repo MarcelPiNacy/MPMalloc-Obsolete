@@ -3,7 +3,7 @@
 
 ## Overview
 
-MPMalloc is a high-performance memory allocator written in C for Windows and Linux systems. Its design is reminiscent of TCMalloc, in that the heap is structured using a hierarchy of caches. Each thread thus keeps a local allocator for small objects and forwards large allocation requests to a shared structure. MPMalloc also takes inspiration from JEMalloc's chunks to arrive at a data structure creatively called the "block allocator", which is the main building block of the entire library. A block allocator is essentially a cache-aware bitmap allocator that supports serial allocation, serial deallocation _and_ concurrent deallocation. Due to how thread-local and thread-shared data are accessed, returning memory from a different thread to a block allocator is usually wait-free and, _sometimes_, lock-free.
+MPMalloc is a high-performance memory allocator written in C for Windows and Unix-like systems. Its design is reminiscent of TCMalloc, in that the heap is structured using a hierarchy of caches. Each thread thus keeps a local allocator for small objects and forwards large allocation requests to a shared structure. MPMalloc also takes inspiration from JEMalloc's chunks to arrive at a data structure creatively called the "block allocator", which is the main building block of the entire library. A block allocator is essentially a cache-aware bitmap allocator that supports serial allocation, serial deallocation _and_ concurrent deallocation. Due to how thread-local and thread-shared data are accessed, returning memory from a different thread to a block allocator is usually wait-free and, _sometimes_, lock-free.
 
 ## Compiler Support
 
