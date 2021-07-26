@@ -149,7 +149,13 @@ typedef uint64_t mp_init_flags;
 #define MP_FLAGS_NO_ATOMICS		(UINT64_C(1) << 2)
 typedef uint64_t mp_flags;
 
-typedef mp_bool(MP_PTR* mp_fn_init)(const struct mp_init_options*);
+typedef struct mp_init_options
+{
+	mp_init_flags flags;
+	const struct mp_backend_options* backend;
+} mp_init_options;
+
+typedef mp_bool(MP_PTR* mp_fn_init)(const mp_init_options*);
 typedef void(MP_PTR* mp_fn_cleanup)();
 typedef void*(MP_PTR* mp_fn_malloc)(size_t size);
 typedef mp_bool(MP_PTR* mp_fn_resize)(const void* ptr, size_t old_size, size_t new_size);
@@ -170,12 +176,6 @@ typedef struct mp_backend_options
 	mp_fn_free free;
 	mp_fn_purge purge;
 } mp_backend_options;
-
-typedef struct mp_init_options
-{
-	mp_init_flags flags;
-	const mp_backend_options* backend;
-} mp_init_options;
 
 typedef struct mp_usage_stats
 {
@@ -328,7 +328,11 @@ MP_EXTERN_C_END
 #ifdef MP_IMPLEMENTATION
 
 #ifdef __linux__
+#define MP_TARGET_UNIXLIKE
 #define MP_TARGET_LINUX
+#elif defined(__FreeBSD__)
+#define MP_TARGET_UNIXLIKE
+#define MP_TARGET_FREEBSD
 #elif defined(_WIN32)
 #define MP_TARGET_WINDOWS
 #else
@@ -371,13 +375,11 @@ MP_EXTERN_C_END
 #define MP_SELECT(CONDITION, ON_TRUE, ON_FALSE) (MP_OPTIONAL(ON_TRUE, (CONDITION)) | MP_OPTIONAL(ON_FALSE, !(CONDITION)))
 #define MP_IS_ALIGNED(PTR, ALIGNMENT) (((size_t)(PTR) & ((size_t)(ALIGNMENT) - (size_t)1)) == 0)
 
-#ifdef MP_TARGET_LINUX
+#include <string.h>
+#ifdef MP_TARGET_UNIXLIKE
 #include <unistd.h>
 #include <sys/mman.h>
 #include <pthread.h>
-#ifdef MP_LARGE_PAGE_SUPPORT
-#include <hugetlbfs.h>
-#endif
 #elif defined(MP_TARGET_WINDOWS)
 #include <Windows.h>
 #if defined(MP_LARGE_PAGE_SUPPORT)
@@ -1133,21 +1135,29 @@ MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
 	(void)DiscardVirtualMemory(ptr, size);
 }
 
-#elif defined(MP_TARGET_LINUX)
+#elif defined(MP_TARGET_UNIXLIKE)
 
-static int mmap_protection;
+static const int mmap_protection = PROT_READ | PROT_WRITE;
 static int mmap_flags;
 
-MP_INLINE_ALWAYS static void mp_os_init(mp_bool enable_large_pages)
+MP_INLINE_ALWAYS static mp_bool mp_os_init(const mp_init_options* options)
 {
-	mmap_protection = PROT_READ | PROT_WRITE;
-	mmap_flags = MAP_ANON | MAP_UNINITIALIZED;
-	if (enable_large_pages)
+	mmap_flags = MAP_ANON;
+#ifdef MP_TARGET_LINUX
+	mmap_mp_flags |= MAP_UNINITIALIZED;
+	MP_LIKELY_IF(options->flags & MP_INIT_ENABLE_LARGE_PAGES)
 		mmap_flags |= MAP_HUGETLB;
+#elif defined(MP_TARGET_FREEBSD)
+	MP_LIKELY_IF(options->flags & MP_INIT_ENABLE_LARGE_PAGES)
+		mmap_flags |= MAP_ALIGNED_SUPER;
+	mmap_flags |= MAP_ALIGNED(chunk_size);
+#endif
+	return MP_TRUE;
 }
 
 MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
 {
+#ifdef MP_TARGET_LINUX
 	uint8_t* tmp = mmap(NULL, size * 2, mmap_protection, mmap_flags, -1, 0);
 	uint8_t* tmp_limit = base + chunk_size * 2;
 	uint8_t* r = (uint8_t*)MP_ALIGN_FLOOR_MASK((size_t)tmp, chunk_size_mask);
@@ -1157,26 +1167,40 @@ MP_INLINE_ALWAYS static void* mp_os_malloc(size_t size)
 	MP_LIKELY_IF(tmp_limit != r_limit)
 		(void)munmap(base_limit, tmp_limit - r_limit);
 	return base;
+#else
+	return mmap(NULL, size, mmap_protection, mmap_flags, -1, 0);
+#endif
 }
 
 MP_INLINE_ALWAYS static mp_bool mp_os_resize(const void* ptr, size_t old_size, size_t new_size)
 {
+#ifdef MP_TARGET_LINUX
 	return mremap((void*)ptr, old_size, new_size, 0) != MAP_FAILED;
-}
-
-MP_INLINE_ALWAYS static void* mp_os_realloc(void* ptr, size_t old_size, size_t new_size)
-{
-	void* r;
-	r = mremap(ptr, old_size, new_size, MREMAP_MAYMOVE);
-	MP_UNLIKELY_IF(r == MAP_FAILED)
-		return NULL;
-	return r;
+#else
+	return MP_FALSE;
+#endif
 }
 
 MP_INLINE_ALWAYS static void mp_os_free(const void* ptr, size_t size)
 {
 	MP_INVARIANT(ptr != NULL);
 	(void)munmap((void*)ptr, size);
+}
+
+MP_INLINE_ALWAYS static void* mp_os_realloc(void* ptr, size_t old_size, size_t new_size)
+{
+#ifdef MP_TARGET_LINUX
+	void* r;
+	r = mremap(ptr, old_size, new_size, MREMAP_MAYMOVE);
+	MP_UNLIKELY_IF(r == MAP_FAILED)
+		return NULL;
+	return r;
+#else
+	void* r = mp_os_malloc(new_size);
+	(void)memcpy(r, ptr, old_size);
+	mp_os_free(ptr, old_size);
+	return r;
+#endif
 }
 
 MP_INLINE_ALWAYS static void mp_os_purge(void* ptr, size_t size)
@@ -2157,6 +2181,13 @@ static void* mp_tcache_malloc_large_fast(mp_tcache* tcache, size_t size, uint_fa
 //	MAIN API
 // ================================================================
 
+#ifdef MP_TARGET_FREEBSD
+static int mp_freebsd_compare_uintptr(const void* lhs, const void* rhs)
+{
+	return *(const ptrdiff_t*)lhs - *(const ptrdiff_t*)rhs;
+}
+#endif
+
 MP_EXTERN_C_BEGIN
 MP_ATTR mp_bool MP_CALL mp_init(const mp_init_options* options)
 {
@@ -2171,7 +2202,15 @@ MP_ATTR mp_bool MP_CALL mp_init(const mp_init_options* options)
 #else
 	page_size = (size_t)getpagesize();
 	chunk_size = page_size * MP_CACHE_LINE_SIZE * 8;
+#ifdef MP_TARGET_LINUX
 	large_page_size = gethugepagesize();
+#else
+	int page_size_count = getpagesizes(NULL, 0);
+	size_t* page_sizes = __builtin_alloca(sizeof(size_t) * page_size_count);
+	getpagesizes(page_sizes, page_size_count);
+	qsort(page_sizes, page_size_count, sizeof(size_t), mp_freebsd_compare_uintptr);
+	large_page_size = page_sizes[page_size_count - 1];
+#endif
 #endif
 #ifdef MP_DEBUG
 	(void)memset(&junkptr, MP_JUNK_VALUE, MP_PTR_SIZE);
