@@ -11,7 +11,7 @@ Currently GCC, Clang and MSVC are supported.
 
 ## Platform Support
 
-MPMalloc has been tested on Windows 10. It *should* also work on any Windows version that supports VirtualAlloc2 and on Linux systems.
+MPMalloc has been tested on Windows 10 and FreeBSD. It *should* also work on any Windows version that supports VirtualAlloc2 and on Linux systems.
 
 ## API
 
