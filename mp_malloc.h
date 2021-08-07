@@ -69,7 +69,7 @@
 #define MP_INCLUDED
 
 #ifdef MP_LEGACY_COMPATIBLE
-#error "MP_LEGACY_COMPATIBLE is not yet supported."
+//#error "MP_LEGACY_COMPATIBLE is not yet supported."
 #endif
 
 #include <stdint.h>
@@ -1419,8 +1419,24 @@ MP_INLINE_ALWAYS static void mp_rcache_init()
 #ifdef MP_LEGACY_COMPATIBLE
 static MP_THREAD_LOCAL uint_fast32_t mp_allocation_type_mask;
 static MP_THREAD_LOCAL uint_fast32_t mp_call_depth;
-#define MP_LEGACY_IS_ALLOCATOR MP_BT(mp_allocation_type_mask, mp_call_depth - 1)
-#define MP_LEGACY_ENTER_MALLOC(IS_ALLOCATOR) MP_BS(mp_allocation_type_mask, mp_call_depth); ++mp_call_depth
+
+static mp_bool mp_legacy_is_allocator_impl()
+{
+	if (mp_call_depth == 0)
+		return MP_FALSE;
+	return MP_BT(mp_allocation_type_mask, mp_call_depth - 1);
+}
+
+static void mp_legacy_enter_malloc(mp_bool is_allocator)
+{
+	MP_BR(mp_allocation_type_mask, mp_call_depth);
+	if (is_allocator)
+		MP_BS(mp_allocation_type_mask, mp_call_depth);
+	++mp_call_depth;
+}
+
+#define MP_LEGACY_IS_ALLOCATOR mp_legacy_is_allocator_impl()
+#define MP_LEGACY_ENTER_MALLOC(IS_ALLOCATOR) mp_legacy_enter_malloc((IS_ALLOCATOR))
 #define MP_LEGACY_LEAVE_MALLOC --mp_call_depth
 #else
 #define MP_LEGACY_IS_ALLOCATOR
@@ -1592,7 +1608,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allo
 	MP_BR(allocator->free_map[mask_index], bit_index);
 #ifdef MP_LEGACY_COMPATIBLE
 	if (MP_LEGACY_IS_ALLOCATOR)
-		MP_BS(allocator->allocator_map[mask_index], bit_index);
+		MP_ATOMIC_BS_REL(allocator->allocator_map + mask_index, bit_index);
 #endif
 	--allocator->free_count;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
@@ -1619,7 +1635,7 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_alloc
 	MP_BR(allocator->free_map[mask_index], bit_index);
 #ifdef MP_LEGACY_COMPATIBLE
 	if (MP_LEGACY_IS_ALLOCATOR)
-		MP_BS(allocator->allocator_map[mask_index], bit_index);
+		MP_ATOMIC_BS_REL(allocator->allocator_map + mask_index, bit_index);
 #endif
 	--allocator->free_count;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
