@@ -69,7 +69,7 @@
 #define MP_INCLUDED
 
 #ifdef MP_LEGACY_COMPATIBLE
-#error "MP_LEGACY_COMPATIBLE is not yet supported."
+//#error "MP_LEGACY_COMPATIBLE is not yet supported."
 #endif
 
 #include <stdint.h>
@@ -140,8 +140,7 @@ typedef _Bool mp_bool;
 
 MP_EXTERN_C_BEGIN
 
-#define MP_INIT_ENABLE_PAGE_MESHING	(UINT64_C(1) << 0)
-#define MP_INIT_ENABLE_LARGE_PAGES	(UINT64_C(1) << 1)
+#define MP_INIT_ENABLE_LARGE_PAGES	(UINT64_C(1))
 typedef uint64_t mp_init_flags;
 
 #define MP_FLAGS_NO_FALLBACK	(UINT64_C(1) << 0)
@@ -1010,7 +1009,7 @@ MP_INLINE_ALWAYS static mp_bool mp_os_init(const mp_init_options* options)
 	va2_ext_param.Pointer = &va2_addr_req;
 	va2_flags = MEM_RESERVE | MEM_COMMIT;
 #if defined(MP_LARGE_PAGE_SUPPORT)
-	MP_LIKELY_IF((options->flags & (MP_INIT_ENABLE_LARGE_PAGES | MP_INIT_ENABLE_PAGE_MESHING)) != 0)
+	MP_LIKELY_IF((options->flags & (MP_INIT_ENABLE_LARGE_PAGES)) != 0)
 		MP_UNLIKELY_IF(!mp_win32_acquire_lock_memory_privilege())
 			return MP_FALSE;
 	MP_LIKELY_IF(options->flags & MP_INIT_ENABLE_LARGE_PAGES)
