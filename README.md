@@ -40,7 +40,6 @@ void mp_free(const void* ptr);
 ```
 
 ## TODO
-- Add a way to return unused block allocators (chunks) from the local TCache to the LCache.
 - Give more options for malloc/free.
 - Add support for aligned allocation.
 - Add a mechanism for returning physical memory to the OS, via DiscardVirtualMemory/madvise.
