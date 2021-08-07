@@ -13,7 +13,7 @@ Currently GCC, Clang and MSVC are supported.
 
 MPMalloc has been tested on Windows 10 and FreeBSD (13.0-RELEASE-p3). It *should* also work on any Windows version that supports VirtualAlloc2 and on Linux systems.
 
-## API
+## Core API
 
 ```c
 mp_bool mp_init(const mp_init_options* options);
