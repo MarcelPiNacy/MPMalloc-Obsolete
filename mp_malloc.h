@@ -894,7 +894,6 @@ static mp_bool mp_init_flag;
 #endif
 
 #ifdef MP_DEBUG
-static void* junkptr;
 static mp_debug_options debugger;
 static mp_bool mp_debug_enabled_flag;
 #endif
@@ -1391,7 +1390,7 @@ MP_ATTR void MP_CALL mp_persistent_cleanup_impl(mp_persistent_allocator* allocat
 {
 	mp_persistent_node* next;
 	mp_persistent_node* n;
-	for (n = (mp_persistent_node*)MP_ATOMIC_XCHG_ACQ_PTR(allocator, NULL); n != NULL; n = next)
+	for (n = (mp_persistent_node*)MP_ATOMIC_XCHG_ACQ_PTR(&allocator, NULL); n != NULL; n = next)
 	{
 		next = n->next;
 		mp_backend_free(n, chunk_size);
@@ -1436,9 +1435,7 @@ MP_INLINE_NEVER static mp_tcache* mp_tcache_acquire_slow()
 	buffer_size = MP_ALIGN_CEIL(buffer_size, MP_CACHE_LINE_SIZE);
 	buffer = (uint8_t*)mp_persistent_malloc_impl(&internal_persistent_allocator, buffer_size);
 	MP_INVARIANT(buffer != NULL);
-#if defined(MP_DEBUG) || !defined(MP_NO_CUSTOM_BACKEND)
 	(void)memset(buffer, 0, buffer_size);
-#endif
 	r = (mp_tcache*)buffer;
 	buffer += sizeof(mp_tcache);
 	r->bins = (mp_block_allocator_intrusive**)buffer;
@@ -1499,6 +1496,18 @@ MP_INLINE_ALWAYS static void mp_rcache_init()
 // ================================================================
 //	BLOCK ALLOCATOR
 // ================================================================
+
+#ifdef MP_LEGACY_COMPATIBLE
+static MP_THREAD_LOCAL uint_fast32_t mp_allocation_type_mask;
+static MP_THREAD_LOCAL uint_fast32_t mp_call_depth;
+#define MP_LEGACY_IS_ALLOCATOR MP_BT(mp_allocation_type_mask, mp_call_depth - 1)
+#define MP_LEGACY_ENTER_MALLOC(IS_ALLOCATOR) MP_BS(mp_allocation_type_mask, mp_call_depth); ++mp_call_depth
+#define MP_LEGACY_LEAVE_MALLOC --mp_call_depth
+#else
+#define MP_LEGACY_IS_ALLOCATOR
+#define MP_LEGACY_ENTER_MALLOC(UNUSED)
+#define MP_LEGACY_LEAVE_MALLOC
+#endif
 
 MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocator, uint_fast8_t sc, struct mp_tcache* owner, void* buffer)
 {
@@ -1662,6 +1671,10 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_malloc(mp_block_allocator* allo
 	bit_index = MP_CTZ(allocator->free_map[mask_index]);
 	MP_INVARIANT(MP_BT(allocator->free_map[mask_index], bit_index));
 	MP_BR(allocator->free_map[mask_index], bit_index);
+#ifdef MP_LEGACY_COMPATIBLE
+	if (MP_LEGACY_IS_ALLOCATOR)
+		MP_BS(allocator->allocator_map[mask_index], bit_index);
+#endif
 	--allocator->free_count;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim_noinline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_MASK_COUNT);
@@ -1685,6 +1698,10 @@ MP_INLINE_ALWAYS static void* mp_block_allocator_intrusive_malloc(mp_block_alloc
 	bit_index = MP_CTZ(allocator->free_map[mask_index]);
 	MP_INVARIANT(((mask_index << MP_PTR_BITS_LOG2) | bit_index) >= mp_block_allocator_intrusive_reserved_count_of(allocator->size_class));
 	MP_BR(allocator->free_map[mask_index], bit_index);
+#ifdef MP_LEGACY_COMPATIBLE
+	if (MP_LEGACY_IS_ALLOCATOR)
+		MP_BS(allocator->allocator_map[mask_index], bit_index);
+#endif
 	--allocator->free_count;
 	MP_UNLIKELY_IF(allocator->free_count == 0)
 		allocator->free_count += mp_block_allocator_reclaim_noinline(allocator->free_map, allocator->marked_map, MP_BLOCK_ALLOCATOR_INTRUSIVE_MASK_COUNT);
@@ -1910,7 +1927,7 @@ static void* mp_trie_insert(mp_trie* trie, size_t key, uint_fast8_t value_size_l
 		MP_LIKELY_IF(MP_ATOMIC_CMPXCHG_REL_PTR(branch, &leaf, new_leaf))
 			leaf = new_leaf;
 		else
-		mp_backend_free(new_leaf, real_leaf_size);
+			mp_backend_free(new_leaf, real_leaf_size);
 	}
 	offset = leaf_index << value_size_log2;
 	MP_INVARIANT(offset + (1ULL << value_size_log2) <= real_leaf_size);
@@ -2062,7 +2079,7 @@ MP_INLINE_ALWAYS static mp_block_allocator* mp_tcache_insert_allocator(const voi
 #endif
 }
 
-static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size_t size, uint_fast8_t sc)
+MP_INLINE_NEVER static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size_t size, uint_fast8_t sc)
 {
 	void* r;
 	size_t k;
@@ -2071,7 +2088,9 @@ static void* mp_tcache_malloc_small_slow(mp_tcache* tcache, size_t size, uint_fa
 	bin = tcache->bins + sc;
 	MP_INVARIANT(this_tcache != NULL);
 	k = mp_chunk_size_of(size);
+	MP_LEGACY_ENTER_MALLOC(1);
 	allocator = (mp_block_allocator_intrusive*)mp_malloc(k);
+	MP_LEGACY_LEAVE_MALLOC;
 	MP_UNLIKELY_IF(allocator == NULL)
 		return NULL;
 	mp_block_allocator_intrusive_init(allocator, sc, this_tcache);
@@ -2213,7 +2232,6 @@ MP_ATTR mp_bool MP_CALL mp_init(const mp_init_options* options)
 #endif
 #endif
 #ifdef MP_DEBUG
-	(void)memset(&junkptr, MP_JUNK_VALUE, MP_PTR_SIZE);
 #endif
 	chunk_size_mask = chunk_size - 1;
 	page_size_log2 = MP_FLOOR_LOG2(page_size);
@@ -2369,7 +2387,9 @@ MP_ATTR void* MP_CALL mp_realloc_sized(void* ptr, size_t old_size, size_t new_si
 	k = mp_round_size(new_size);
 	MP_UNLIKELY_IF(mp_resize_sized(ptr, old_size, new_size))
 		return ptr;
+	MP_LEGACY_ENTER_MALLOC(0);
 	r = mp_malloc(new_size);
+	MP_LEGACY_LEAVE_MALLOC;
 	MP_LIKELY_IF(r != NULL)
 	{
 		(void)memcpy(r, ptr, old_size);
@@ -2416,9 +2436,6 @@ MP_ATTR size_t MP_CALL mp_rounded_allocation_size_of(const void* ptr)
 			MP_LIKELY_IF(!MP_ATOMIC_BT_ACQ(allocator->allocator_map + (k >> MP_PTR_BITS_LOG2), k & MP_PTR_BITS_MASK))
 			{
 				r = (size_t)1 << n;
-#ifdef MP_CHECK_OVERFLOW
-				r -= MP_REDZONE_MIN_SIZE;
-#endif
 				return r;
 			}
 			allocator_intrusive = (mp_block_allocator_intrusive*)(allocator->buffer + (k << n));
@@ -2434,9 +2451,6 @@ MP_ATTR size_t MP_CALL mp_rounded_allocation_size_of(const void* ptr)
 			MP_LIKELY_IF(!MP_ATOMIC_BT_ACQ(allocator_intrusive->allocator_map + (k >> MP_PTR_BITS_LOG2), k& MP_PTR_BITS_MASK))
 			{
 				r = n;
-#ifdef MP_CHECK_OVERFLOW
-				r -= MP_REDZONE_MIN_SIZE;
-#endif
 				break;
 			}
 			allocator_intrusive = (mp_block_allocator_intrusive*)((uint8_t*)allocator_intrusive + k * n);
@@ -2483,11 +2497,12 @@ MP_ATTR size_t MP_CALL mp_min_alignment(size_t size)
 MP_ATTR void* MP_CALL mp_tcache_malloc(size_t size, mp_flags flags)
 {
 	void* r;
-	size_t k;
 	MP_INVARIANT(this_tcache != NULL);
 	mp_this_tcache_check_integrity();
-	k = mp_round_size(size);
-	r = (size <= page_size ? mp_tcache_malloc_small_fast : mp_tcache_malloc_large_fast)(this_tcache, k, flags);
+#ifdef MP_DEBUG
+	MP_INVARIANT(mp_round_size(size) == size);
+#endif
+	r = (size <= page_size ? mp_tcache_malloc_small_fast : mp_tcache_malloc_large_fast)(this_tcache, size, flags);
 	MP_DEBUG_JUNK_FILL(r, size);
 	mp_this_tcache_check_integrity();
 	return r;
@@ -2508,7 +2523,9 @@ MP_ATTR void MP_CALL mp_tcache_free(const void* ptr, size_t size)
 	mp_block_allocator* allocator;
 	size_t k;
 	mp_this_tcache_check_integrity();
-	size = mp_round_size(size);
+#ifdef MP_DEBUG
+	MP_INVARIANT(mp_round_size(size) == size);
+#endif
 	MP_LIKELY_IF(size <= page_size)
 	{
 		k = mp_chunk_size_of(size);
@@ -2665,13 +2682,14 @@ MP_ATTR void MP_CALL mp_persistent_cleanup()
 MP_ATTR void* MP_CALL mp_backend_malloc(size_t size)
 {
 	void* r;
-	size_t k;
-	k = mp_round_size(size);
+#ifdef MP_DEBUG
+	MP_INVARIANT(mp_round_size(size) == size);
+#endif
 #ifndef MP_NO_CUSTOM_BACKEND
 	MP_INVARIANT(backend_malloc != NULL);
-	r = backend_malloc(k);
+	r = backend_malloc(size);
 #else
-	r = mp_os_malloc(k);
+	r = mp_os_malloc(size);
 #endif
 	MP_DEBUG_JUNK_FILL(r, size);
 	return r;
@@ -2679,18 +2697,17 @@ MP_ATTR void* MP_CALL mp_backend_malloc(size_t size)
 
 MP_ATTR mp_bool MP_CALL mp_backend_resize(const void* ptr, size_t old_size, size_t new_size)
 {
-	size_t k;
 	MP_INVARIANT(ptr != NULL);
 #ifdef MP_DEBUG
 	assert(mp_debug_overflow_check(ptr, old_size));
+	MP_INVARIANT(mp_round_size(new_size) == new_size);
 #endif
-	k = mp_round_size(new_size);
 #ifndef MP_NO_CUSTOM_BACKEND
 	MP_INVARIANT(backend_resize != NULL);
-	MP_UNLIKELY_IF(backend_resize(ptr, old_size, k))
+	MP_UNLIKELY_IF(backend_resize(ptr, old_size, new_size))
 		return MP_FALSE;
 #else
-	MP_UNLIKELY_IF(mp_os_resize(ptr, old_size, k))
+	MP_UNLIKELY_IF(mp_os_resize(ptr, old_size, new_size))
 		return MP_FALSE;
 #endif
 	MP_DEBUG_JUNK_FILL((uint8_t*)ptr + old_size, new_size - old_size);
@@ -2700,17 +2717,16 @@ MP_ATTR mp_bool MP_CALL mp_backend_resize(const void* ptr, size_t old_size, size
 MP_ATTR void* MP_CALL mp_backend_realloc(void* ptr, size_t old_size, size_t new_size)
 {
 	void* r;
-	size_t k;
 	MP_INVARIANT(ptr != NULL);
 #ifdef MP_DEBUG
 	assert(mp_debug_overflow_check(ptr, old_size));
+	MP_INVARIANT(mp_round_size(new_size) == new_size);
 #endif
-	k = mp_round_size(new_size);
 #ifndef MP_NO_CUSTOM_BACKEND
 	MP_INVARIANT(backend_resize != NULL);
-	r = backend_realloc(ptr, old_size, k);
+	r = backend_realloc(ptr, old_size, new_size);
 #else
-	r = mp_os_realloc(ptr, old_size, k);
+	r = mp_os_realloc(ptr, old_size, new_size);
 #endif
 	MP_DEBUG_JUNK_FILL((uint8_t*)r + old_size, new_size - old_size);
 	return r;
