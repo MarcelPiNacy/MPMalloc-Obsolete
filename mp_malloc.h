@@ -69,7 +69,7 @@
 #define MP_INCLUDED
 
 #ifdef MP_LEGACY_COMPATIBLE
-//#error "MP_LEGACY_COMPATIBLE is not yet supported."
+#error "MP_LEGACY_COMPATIBLE is not yet supported."
 #endif
 
 #include <stdint.h>
