@@ -238,7 +238,7 @@ MP_ATTR size_t				MP_CALL mp_min_alignment(size_t size);
 
 #ifdef MP_LEGACY_COMPATIBLE
 // (MP_LEGACY_COMPATIBLE) Returns the size of the memory block by a given address.
-MP_ATTR size_t				MP_CALL mp_rounded_allocation_size_of(const void* ptr);
+MP_ATTR size_t				MP_CALL mp_allocation_size_of(const void* ptr);
 // (MP_LEGACY_COMPATIBLE) Attempts to resize the block of memory without changing the address.
 MP_ATTR mp_bool				MP_CALL mp_resize(const void* ptr, size_t new_size);
 // (MP_LEGACY_COMPATIBLE) Attempts to resize the block of memory in-place. Otherwise reallocates the contents of the source memory into a larger block.
@@ -2330,7 +2330,7 @@ MP_ATTR void MP_CALL mp_free_sized(const void* ptr, size_t size)
 }
 
 #ifdef MP_LEGACY_COMPATIBLE
-MP_ATTR size_t MP_CALL mp_rounded_allocation_size_of(const void* ptr)
+MP_ATTR size_t MP_CALL mp_allocation_size_of(const void* ptr)
 {
 	mp_block_allocator* allocator;
 	mp_block_allocator_intrusive* allocator_intrusive;
@@ -2380,19 +2380,19 @@ MP_ATTR size_t MP_CALL mp_rounded_allocation_size_of(const void* ptr)
 
 MP_ATTR mp_bool MP_CALL mp_resize(const void* ptr, size_t new_size)
 {
-	size_t old_size = mp_rounded_allocation_size_of(ptr);
+	size_t old_size = mp_allocation_size_of(ptr);
 	return mp_resize_sized(ptr, old_size, new_size);
 }
 
 MP_NODISCARD MP_ATTR void* MP_CALL mp_realloc(void* ptr, size_t new_size)
 {
-	size_t old_size = mp_rounded_allocation_size_of(ptr);
+	size_t old_size = mp_allocation_size_of(ptr);
 	return mp_realloc_sized(ptr, old_size, new_size);
 }
 
 MP_ATTR void MP_CALL mp_free(const void* ptr)
 {
-	size_t size = mp_rounded_allocation_size_of(ptr);
+	size_t size = mp_allocation_size_of(ptr);
 	mp_free_sized(ptr, size);
 }
 #endif
