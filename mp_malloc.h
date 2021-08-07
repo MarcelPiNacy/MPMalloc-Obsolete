@@ -704,86 +704,6 @@ MP_INLINE_ALWAYS static mp_bool mp_impl_cmpxchg16_rel(volatile mp_msvc_uintptr_p
 #define MP_PTRS_PER_DWORD (4 / MP_PTR_SIZE)
 
 // ================================================================
-//	MISCELLANEOUS
-// ================================================================
-
-#define MP_ZERO_COLD_16(PTR) _mm_stream_si128((__m128i*)(PTR), _mm_setzero_si128())
-#define MP_ZERO_COLD_32(PTR) _mm256_stream_si256((__m256i*)(PTR), _mm256_setzero_si256())
-#define MP_ZERO_COLD_64(PTR) _mm512_stream_si512((__m512i*)(PTR), _mm512_setzero_si512())
-
-MP_INLINE_ALWAYS static void mp_zero_fill_block_allocator_map(void* ptr)
-{
-	uint8_t* i = (uint8_t*)ptr;
-#if (MP_CACHE_LINE_SIZE / 2) == 64
-#ifdef MP_HAS_AVX512F
-	MP_ZERO_COLD_64(i);
-#elif defined(MP_HAS_AVX)
-	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 32);
-#elif defined(MP_HAS_SSE2)
-	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 16);
-	MP_ZERO_COLD_32(i + 32); MP_ZERO_COLD_32(i + 48);
-#else
-	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE / 2);
-#endif
-#elif (MP_CACHE_LINE_SIZE / 2) == 32
-#ifdef MP_HAS_AVX
-	MP_ZERO_COLD_32(i);
-#elif defined(MP_HAS_SSE2)
-	MP_ZERO_COLD_32(i);
-	MP_ZERO_COLD_32(i + 16);
-#else
-	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE / 2);
-#endif
-#elif (MP_CACHE_LINE_SIZE / 2) == 16
-#ifdef MP_HAS_SSE2
-	MP_ZERO_COLD_32(i);
-#else
-	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE / 2);
-#endif
-#endif
-}
-
-MP_INLINE_ALWAYS static void mp_zero_fill_block_allocator_intrusive_map(void* ptr)
-{
-	uint8_t* i = (uint8_t*)ptr;
-#if MP_CACHE_LINE_SIZE == 128
-#ifdef MP_HAS_AVX512F
-	MP_ZERO_COLD_64(i);
-	MP_ZERO_COLD_64(i + 64);
-#elif defined(MP_HAS_AVX)
-	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 32);
-	MP_ZERO_COLD_32(i + 64); MP_ZERO_COLD_32(i + 96);
-#elif defined(MP_HAS_SSE2)
-	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 16); MP_ZERO_COLD_32(i + 32); MP_ZERO_COLD_32(i + 48);
-	MP_ZERO_COLD_32(i + 64); MP_ZERO_COLD_32(i + 80); MP_ZERO_COLD_32(i + 96); MP_ZERO_COLD_32(i + 112);
-#else
-	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE);
-#endif
-#elif MP_CACHE_LINE_SIZE == 64
-#ifdef MP_HAS_AVX512F
-	MP_ZERO_COLD_64(i);
-#elif defined(MP_HAS_AVX)
-	MP_ZERO_COLD_32(i);
-	MP_ZERO_COLD_32(i + 32);
-#elif defined(MP_HAS_SSE2)
-	MP_ZERO_COLD_32(i); MP_ZERO_COLD_32(i + 16);
-	MP_ZERO_COLD_32(i + 32); MP_ZERO_COLD_32(i + 48);
-#else
-	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE);
-#endif
-#elif MP_CACHE_LINE_SIZE == 32
-#ifdef MP_HAS_AVX
-	MP_ZERO_COLD_32(i);
-#elif defined(MP_HAS_SSE2)
-	MP_ZERO_COLD_32(i);
-	MP_ZERO_COLD_32(i + 16);
-#else
-	(void)memset(ptr, 0, MP_CACHE_LINE_SIZE);
-#endif
-#endif
-}
-
-// ================================================================
 //	MPMALLOC MAIN DATA TYPES
 // ================================================================
 
@@ -1514,9 +1434,9 @@ MP_INLINE_ALWAYS static void mp_block_allocator_init(mp_block_allocator* allocat
 	uint_fast8_t block_size_log2;
 	uint_fast32_t mask_count, bit_count;
 	block_size_log2 = mp_sc_to_size_large_log2(sc);
-	mp_zero_fill_block_allocator_map((void*)allocator->marked_map);
+	(void)memset((void*)allocator->marked_map, 0, sizeof(allocator->marked_map));
 #ifdef MP_LEGACY_COMPATIBLE
-	mp_zero_fill_block_allocator_map((void*)allocator->allocator_map);
+	(void)memset((void*)allocator->allocator_map, 0, sizeof(allocator->allocator_map));
 #endif
 	MP_INVARIANT(allocator != NULL);
 	MP_INVARIANT(buffer != NULL);
@@ -1548,9 +1468,9 @@ MP_INLINE_ALWAYS static void mp_block_allocator_intrusive_init(mp_block_allocato
 {
 	uint_fast32_t mask_count, bit_count, reserved_count;
 	MP_INVARIANT(allocator != NULL);
-	mp_zero_fill_block_allocator_intrusive_map((void*)allocator->marked_map);
+	(void)memset((void*)allocator->marked_map, 0, sizeof(allocator->marked_map));
 #ifdef MP_LEGACY_COMPATIBLE
-	mp_zero_fill_block_allocator_intrusive_map((void*)allocator->allocator_map);
+	(void)memset((void*)allocator->allocator_map, 0, sizeof(allocator->allocator_map));
 #endif
 	MP_INVARIANT(sc < tcache_small_sc_count);
 	reserved_count = mp_block_allocator_intrusive_reserved_count_of(sc);
